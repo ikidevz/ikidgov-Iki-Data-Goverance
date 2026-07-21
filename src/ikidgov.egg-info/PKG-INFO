@@ -3,6 +3,7 @@ Name: ikidgov
 Version: 0.1.0
 Summary: A lightweight composable data governance layer
 Requires-Python: >=3.10
+Description-Content-Type: text/markdown
 License-File: LICENSE
 Requires-Dist: pyyaml<7.0,>=6.0
 Requires-Dist: sqlalchemy<3.0,>=2.0
@@ -14,3 +15,233 @@ Requires-Dist: pytest>=7.0; extra == "dev"
 Provides-Extra: iki-pii-masker
 Requires-Dist: iki-pii-masker>=0.1.0; extra == "iki-pii-masker"
 Dynamic: license-file
+
+# ikidgov - Iki Data Goverance
+
+ikidgov is a lightweight, composable data governance toolkit for scanning data sources,
+classifying columns, and evaluating role-based access policies — without requiring a large
+platform migration.
+
+![PyPI](https://img.shields.io/pypi/v/ikidgov)
+![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
+![License MIT](https://img.shields.io/badge/license-MIT-green)
+![Backend](https://img.shields.io/badge/backend-SQLite%20%7C%20Postgres%20%7C%20MySQL%20%7C%20MSSQL-orange)
+
+![Cover](assets/image.png)
+
+## What it does
+
+ikidgov helps you:
+
+- **Discover** — scan CSV, JSON, and SQL (SQLite) sources to register schema metadata
+- **Classify** — tag columns with built-in or plugin-based PII/sensitivity detectors
+- **Enforce** — evaluate access policies with a fail-closed decision model
+- **Provision** — compile role-based grants into ready-to-run SQL for MySQL, PostgreSQL,
+  MSSQL, or generic SQL dialects
+- **Configure once** — keep roles, permissions, scopes, and connector defaults in a single
+  YAML file, with environment-specific overrides (`dev` / `staging` / `prod`)
+
+## Installation
+
+### From PyPI
+
+```bash
+pip install ikidgov
+```
+
+This installs the `ikidgov` console command along with the importable `ikidgov` Python
+package.
+
+### From source (development install)
+
+```bash
+git clone <this repository>
+cd ikidgov
+python -m pip install -e ".[dev]"
+```
+
+### Docker-based example environment
+
+```bash
+cp .env.example .env   # adjust values if needed; see "Secrets & credentials" below
+docker compose up -d --wait
+```
+
+### Requirements
+
+- Python 3.10 or newer
+- Docker (optional — only needed for the example multi-database stack)
+- PyYAML, SQLAlchemy, and the driver for whichever SQL backend(s) you target
+  (`psycopg2-binary` for Postgres, `pymysql` for MySQL, `pyodbc` for MSSQL)
+
+## Quick start
+
+```bash
+# 1. Scan a file and register its schema
+ikidgov scan --type csv --path customers.csv --owner jdoe
+
+# 2. Scan a SQL table with the shared governance YAML and a PostgreSQL backend
+ikidgov scan --type sql --path ./data/sqlite/registry.db --table employees --owner jdoe --backend postgres --config config/governance.yaml
+
+# 3. Scan the same table with MySQL or MSSQL
+ikidgov scan --type sql --path ./data/sqlite/registry.db --table employees --owner jdoe --backend mysql --config config/governance.yaml
+ikidgov scan --type sql --path ./data/sqlite/registry.db --table employees --owner jdoe --backend mssql --config config/governance.yaml
+
+# 2. Classify the columns
+ikidgov classify --dataset-id 1
+
+# 3. Check whether a role can access a column
+ikidgov policy-check --actor-role analyst --action-type select --dataset-id 1 --column email
+
+# 4. Compile policy output for a SQL dialect
+ikidgov policy-compile --policy restrict_pii --table employees --dialect mysql --format text
+```
+
+Every subcommand accepts `--format json` (default) or `--format text` for output rendering.
+
+## Configuration
+
+The main configuration file is [config/governance.yaml](config/governance.yaml). It keeps
+governance settings in one place:
+
+- roles and their permissions
+- role-scoped account credentials
+- connector defaults (per source type: `csv`, `json`, `sql`)
+- policy-related metadata
+
+Example:
+
+```yaml
+roles:
+  analyst:
+    description: Consumes data within policy limits
+    account:
+      username: analyst
+      password: "<set a strong password — do not commit real passwords>"
+    permissions:
+      - select
+    scope: policy_restricted
+
+connectors:
+  csv:
+    default_type: string
+```
+
+### Config resolution order
+
+ikidgov looks for a config file in this order (first match wins):
+
+1. An explicit path passed to `load_config(path)` / the tool's `--config` option, where
+   applicable
+2. `$IKIDGOV_CONFIG`, if set
+3. `governance.<environment>.yaml` in the current working directory, if `$IKIDGOV_ENV` or
+   `$APP_ENV` is set and the file exists
+4. `governance.yaml` in the current working directory
+5. `config/governance.<environment>.yaml` under the current working directory
+6. The bundled `config/governance.yaml` shipped with the package
+
+Environment-specific example files are included in [config](config):
+
+- [config/governance.dev.yaml](config/governance.dev.yaml)
+- [config/governance.staging.yaml](config/governance.staging.yaml)
+- [config/governance.prod.yaml](config/governance.prod.yaml)
+
+Try them with either the environment variable or the CLI flag:
+
+```bash
+IKIDGOV_ENV=dev ikidgov show-config
+ikidgov --env staging show-config
+ikidgov --env prod show-config
+```
+
+### Secrets & credentials
+
+- **Never commit real passwords.** The `governance.*.yaml` files under `config/` are
+  _examples_ — replace every `password` field with a real secret sourced from your
+  environment or secrets manager before using a profile outside local development.
+- If a role's `account.password` is left unset, `policy-compile` will refuse to generate
+  `CREATE USER` / `CREATE LOGIN` SQL for that role rather than falling back to a default —
+  you must set a password explicitly for any role that needs a provisioned database account.
+- `.env` is for local, disposable Docker Compose credentials only. Copy `.env.example` to
+  `.env` and keep the real `.env` out of version control (see `.gitignore`).
+
+## Docker and SQL backends
+
+The repository includes a Docker Compose stack for SQLite, PostgreSQL, MySQL, and MSSQL
+examples, used by the scripts in [examples](examples).
+
+```bash
+cp .env.example .env
+docker compose up -d --wait
+python examples/enterprise_setup.py --dialect all
+```
+
+If you only want a single backend, replace `all` with `sqlite`, `postgres`, `mysql`, or
+`mssql`. Add `--dry-run` to preview the commands without executing them, and `--teardown` to
+wipe the example data.
+
+> Note: the bundled `scan` CLI command currently discovers schema from **SQLite** files for
+> the `sql` source type (`--type sql --path <file> --table <name>`). The Docker Compose stack
+> spins up PostgreSQL/MySQL/MSSQL so `examples/enterprise_setup.py` can exercise the
+> multi-dialect **policy-compile / provisioning** path against all four backends — it is not
+> (yet) a multi-dialect `scan` target.
+
+## Core modules
+
+| Module                  | Responsibility                                                       |
+| ----------------------- | -------------------------------------------------------------------- |
+| `metadata_registry`     | Stores datasets, columns, owners, tags, and sensitivity labels       |
+| `connectors`            | CSV, JSON, and SQL (SQLite) schema-discovery helpers                 |
+| `classification_engine` | Applies built-in or plugin detectors to tag column sensitivity       |
+| `policy_engine`         | Evaluates access decisions and compiles role grants into dialect SQL |
+| `access_control`        | Role-based CRUD for roles, permissions, and access entries           |
+
+Modules are registered as `4p.modules` entry points (see `pyproject.toml`) and detectors as
+`4p.detectors` entry points, so both are discoverable and swappable without changing core code.
+
+## Example workflow
+
+The scripts in [examples](examples) demonstrate a full governance walkthrough: provisioning
+sample data, printing a role/account overview, running access-control CRUD and policy demos,
+and compiling+applying role grants across all four SQL dialects.
+
+```bash
+python examples/enterprise_setup.py --dialect all --dry-run --skip-demo   # preview only
+python examples/enterprise_setup.py --dialect all                        # apply
+python examples/enterprise_setup.py --dialect all --teardown              # reset
+```
+
+See [examples/GUIDE.md](examples/GUIDE.md) for the full walkthrough and config-file format.
+
+## Testing
+
+Install the dev extras and run the test suite locally:
+
+```bash
+python -m pip install -e ".[dev]"
+pytest
+```
+
+The suite covers CLI smoke tests, config resolution/overrides, access-control CRUD, policy
+evaluation, module isolation, and the example provisioning scripts.
+
+## Project layout
+
+```
+src/ikidgov/
+  cli/            argparse-based CLI and subcommands
+  config_loader.py   governance YAML resolution
+  connectors/     CSV / JSON / SQL schema discovery
+  core/           shared base classes (Module, Connector, Detector, Decision, CRUD base)
+  detectors/      built-in and plugin PII detectors
+  modules/        access_control, classification_engine, metadata_registry, policy_engine
+  policies/       policy definitions (YAML), e.g. restrict_pii.yaml
+config/           governance.yaml + per-environment overrides
+examples/         enterprise_setup.py and seed SQL for the Docker Compose stack
+init/             one-shot DB seed scripts used by docker-compose.yml
+tests/            pytest suite
+```
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE).

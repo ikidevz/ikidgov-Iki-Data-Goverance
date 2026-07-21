@@ -21,10 +21,12 @@ src/ikidgov/cli/commands/show_config.py
 src/ikidgov/connectors/csv_connector.py
 src/ikidgov/connectors/json_connector.py
 src/ikidgov/connectors/sql_connector.py
+src/ikidgov/core/audit.py
 src/ikidgov/core/connector_base.py
 src/ikidgov/core/crud_base.py
 src/ikidgov/core/decision.py
 src/ikidgov/core/detector_base.py
+src/ikidgov/core/example_runtime.py
 src/ikidgov/core/module_base.py
 src/ikidgov/core/validation.py
 src/ikidgov/detectors/builtin_detector.py
@@ -42,7 +44,9 @@ src/ikidgov/modules/metadata_registry/interface.py
 src/ikidgov/modules/policy_engine/impl.py
 src/ikidgov/modules/policy_engine/interface.py
 tests/test_access_control_crud.py
+tests/test_audit_logging.py
 tests/test_cli_smoke.py
+tests/test_enterprise_hardening.py
 tests/test_enterprise_setup.py
 tests/test_external_config.py
 tests/test_module_isolation.py
