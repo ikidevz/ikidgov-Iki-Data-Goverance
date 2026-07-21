@@ -1,0 +1,123 @@
+# Test-only environment for exercising ikigov's scan command.
+# Not for production use -- credentials live in .env (see .env.example) and are throwaway.
+#
+# Usage:
+#   cp .env.example .env
+#   docker compose up -d --wait
+#   docker compose exec toolbox bash
+#   # inside the toolbox container:
+#   ikigov scan --type sql --path /data/sqlite/registry.db --table customers --owner jdoe
+#
+# Note: the current scan CLI accepts --type, --path, --table, and --owner; it does not
+# support --dialect or --dsn flags in this version.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./init/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./init/mysql-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mysqladmin ping -h localhost -u root -p${MYSQL_ROOT_PASSWORD}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Kept as mcr.microsoft.com/mssql/server:2022-latest -- fine for
+  # testing purposes. Ships mssql-tools18 pre-baked, so it was never
+  # affected by the toolbox's apt/sqv signing issue; no change needed here.
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD}
+    ports:
+      - "1433:1433"
+    volumes:
+      - mssql_data:/var/opt/mssql
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - '/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "${MSSQL_SA_PASSWORD}" -C -Q "SELECT 1" || exit 1'
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # MSSQL's image has no docker-entrypoint-initdb.d equivalent, so seeding
+  # is a one-shot job that waits for a healthy server, runs the script, exits.
+  mssql-init:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    depends_on:
+      mssql:
+        condition: service_healthy
+    volumes:
+      - ./init/mssql-init.sql:/init/mssql-init.sql:ro
+    entrypoint: >
+      /opt/mssql-tools18/bin/sqlcmd -S mssql -U sa -P "${MSSQL_SA_PASSWORD}" -C -i /init/mssql-init.sql
+    restart: "no"
+
+  # SQLite is serverless -- this just writes a seeded .db file to a shared
+  # volume once, then exits. No long-running container needed.
+  sqlite-init:
+    image: python:3.12-slim-bookworm
+    volumes:
+      - ./init/sqlite-init.py:/init/sqlite-init.py:ro
+      - sqlite_data:/data
+    command: ["python", "/init/sqlite-init.py"]
+    restart: "no"
+
+  # Has psycopg2, pymysql, pymssql (FreeTDS-based -- no Microsoft ODBC
+  # repo/driver dependency), and sqlalchemy pre-installed -- exec into
+  # this rather than fighting driver installs on your host.
+  toolbox:
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      mssql-init:
+        condition: service_completed_successfully
+      sqlite-init:
+        condition: service_completed_successfully
+    volumes:
+      - .:/app
+      - sqlite_data:/data/sqlite
+    working_dir: /app
+    tty: true
+
+volumes:
+  postgres_data:
+  mysql_data:
+  mssql_data:
+  sqlite_data:

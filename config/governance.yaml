@@ -1,0 +1,99 @@
+roles:
+  admin:
+    description: Full control over registry, policies, and roles
+    account:
+      username: admin
+      password: null
+    permissions:
+      - all
+    scope: null
+
+  data_owner:
+    description: Accountable for a dataset's classification and access grants
+    account:
+      username: data_owner
+      password: null
+    permissions:
+      - select
+      - insert
+      - update
+      - delete
+      - create
+      - alter
+      - drop
+      - grant_access
+      - approve_classification
+    scope: owned_datasets_only
+
+  data_steward:
+    description: Classifies data and proposes policy changes within a domain
+    account:
+      username: data_steward
+      password: null
+    permissions:
+      - select
+      - insert
+      - update
+      - delete
+      - create
+      - alter
+      - drop
+      - classify
+      - propose_policy
+    scope: domain_restricted
+
+  analyst:
+    description: Consumes data within policy limits
+    account:
+      username: analyst
+      password: null
+    permissions:
+      - select
+    scope: policy_restricted
+
+  auditor:
+    description: Reviews governance decisions, cannot alter state
+    account:
+      username: auditor
+      password: null
+    permissions:
+      - read_audit_log
+    scope: read_only
+
+  service_account:
+    description: Programmatic access via scoped API tokens
+    account:
+      username: service_account
+      password: null
+    permissions:
+      - select
+    scope: token_restricted
+
+connectors:
+  csv:
+    default_type: string
+  json:
+    default_type: string
+  sql:
+    default_type: string
+
+sqlite:
+  mode: direct
+  path: ./data/sqlite/registry.db
+  database_path: ./data/sqlite/registry.db
+
+postgresql:
+  mode: direct
+  connection_string: postgresql://ikigov:ikigov_test_pw@localhost:5432/ikigov_test
+  dsn: postgresql://ikigov:ikigov_test_pw@localhost:5432/ikigov_test
+
+mysql:
+  mode: direct
+  connection_string: mysql+pymysql://root:ikigov_root_pw@localhost:3306/ikigov_test
+  dsn: mysql+pymysql://root:ikigov_root_pw@localhost:3306/ikigov_test
+
+mssql:
+  mode: direct
+  connection_string: mssql+pyodbc://sa:IkiGov_Test_Pw1!@localhost:1433/ikigov_test?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
+  dsn: mssql+pyodbc://sa:IkiGov_Test_Pw1!@localhost:1433/ikigov_test?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
+  note: install the Microsoft ODBC Driver 18 for SQL Server to connect from this host

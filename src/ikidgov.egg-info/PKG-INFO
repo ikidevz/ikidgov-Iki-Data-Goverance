@@ -1,0 +1,16 @@
+Metadata-Version: 2.4
+Name: ikidgov
+Version: 0.1.0
+Summary: A lightweight composable data governance layer
+Requires-Python: >=3.10
+License-File: LICENSE
+Requires-Dist: pyyaml<7.0,>=6.0
+Requires-Dist: sqlalchemy<3.0,>=2.0
+Requires-Dist: pyodbc<6.0,>=5.0
+Requires-Dist: psycopg2-binary<3.0,>=2.9
+Requires-Dist: pymysql<2.0,>=1.1
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+Provides-Extra: iki-pii-masker
+Requires-Dist: iki-pii-masker>=0.1.0; extra == "iki-pii-masker"
+Dynamic: license-file

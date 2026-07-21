@@ -1,0 +1,30 @@
+[project]
+name = "ikidgov"
+version = "0.1.0"
+description = "A lightweight composable data governance layer"
+requires-python = ">=3.10"
+dependencies = ["pyyaml>=6.0,<7.0", "sqlalchemy>=2.0,<3.0", "pyodbc>=5.0,<6.0", "psycopg2-binary>=2.9,<3.0", "pymysql>=1.1,<2.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+iki_pii_masker = ["iki-pii-masker>=0.1.0"]
+
+[project.entry-points."4p.detectors"]
+builtin = "ikidgov.detectors.builtin_detector:BuiltinDetector"
+iki_pii_masker = "ikidgov.detectors.iki_pii_masker_detector:IkiPIIMaskerDetector"
+
+[project.entry-points."4p.modules"]
+example_module = "ikidgov.modules.example_module.impl:ExampleModule"
+metadata_registry = "ikidgov.modules.metadata_registry.impl:MetadataRegistry"
+classification_engine = "ikidgov.modules.classification_engine.impl:ClassificationEngine"
+policy_engine = "ikidgov.modules.policy_engine.impl:PolicyEngine"
+
+[project.scripts]
+ikidgov = "ikidgov.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"

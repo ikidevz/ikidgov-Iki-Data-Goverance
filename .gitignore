@@ -1,0 +1,15 @@
+**/__pycache__/
+logs/
+bin/
+dist/
+data/
+structure.py
+ARTICLE.MD
+.pytest_cache/
+examples/data/
+examples/output/
+.pypirc
+.pytest_cache/
+.vscode/
+.env
+registry.db

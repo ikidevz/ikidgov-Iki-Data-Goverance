@@ -1,0 +1,7 @@
+policy: restrict_pii
+applies_to:
+  sensitivity: high
+rule:
+  action: read
+  requires_role: [admin, data_owner]
+reason_on_deny: "Column tagged sensitivity=high; role '{actor_role}' lacks required access."
