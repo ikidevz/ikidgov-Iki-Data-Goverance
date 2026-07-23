@@ -13,3 +13,4 @@ examples/output/
 .vscode/
 .env
 registry.db
+*.log

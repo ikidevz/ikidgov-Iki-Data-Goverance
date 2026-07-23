@@ -20,4 +20,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 RUN pip install --no-cache-dir -e .
 
+RUN groupadd --system ikidgov && useradd --system --gid ikidgov --home /app ikidgov \
+    && chown -R ikidgov:ikidgov /app
+USER ikidgov
+
 CMD ["sleep", "infinity"]

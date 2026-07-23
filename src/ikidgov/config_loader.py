@@ -31,9 +31,16 @@ def _normalize_role(role_name: str, role_config: Any, *, path: str = "roles") ->
     username = account_config.get("username")
     if username is not None:
         account["username"] = username
+    password_env = account_config.get("password_env")
+    if password_env is not None:
+        account["password_env"] = password_env
     password = account_config.get("password")
     if password is not None:
         account["password"] = password
+    elif password_env is not None:
+        resolved_password = os.getenv(password_env)
+        if resolved_password is not None:
+            account["password"] = resolved_password
     if account:
         normalized["account"] = account
 

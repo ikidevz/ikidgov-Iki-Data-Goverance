@@ -1,12 +1,14 @@
 # Example setup guide
 
-This folder contains runnable examples for the enterprise governance workflow and for exercising the bundled Docker-backed SQL backends.
+# Example setup guide
+
+This folder contains runnable examples for the enterprise governance workflow. Everything here connects directly to a database via SQLAlchemy — no Docker required. Bring your own running Postgres/MySQL/MSSQL server (local install, cloud DB, a container you started yourself, whatever you already have), or just use the SQLite default, which needs nothing.
 
 These examples are intended as a practical how-to for demonstrating governance setup, role-based access, and policy evaluation in a realistic environment.
 
 ## Files
 
-- enterprise_setup.py: provisions example data for SQLite, PostgreSQL, MySQL, and MSSQL.
+- enterprise_setup.py: provisions example data and per-role database accounts for SQLite, PostgreSQL, MySQL, and MSSQL.
 - sqlite_setup.sql, postgresql_setup.sql, mysql_setup.sql, mssql_setup.sql: idempotent seed scripts.
 - ../config/governance.yaml: the canonical YAML configuration file for roles, permissions, and connector defaults.
 
@@ -18,26 +20,49 @@ These examples are intended as a practical how-to for demonstrating governance s
 python -m pip install -e .
 ```
 
-### 2. Start the example services
+### 2. Run the example setup
+
+SQLite needs no setup at all — it's the default and just writes a local file:
 
 ```bash
-docker compose up -d --wait
-```
-
-### 3. Run the example setup
-
-The example runner now prints a role and account overview before it applies any SQL. This helps you see the identities, permissions, and scope of each governance role in a single place.
-
-A good first pass is to preview the flow without changing anything:
-
-```bash
-python examples/enterprise_setup.py --dialect sqlite --dry-run --skip-demo
+python examples/enterprise_setup.py --dry-run --skip-demo
 ```
 
 When you are ready to apply the example data:
 
 ```bash
-python examples/enterprise_setup.py --dialect all
+python examples/enterprise_setup.py
+```
+
+This creates `./data/sqlite/registry.db` by default. Override the location with `--sqlite-path`.
+
+### 3. Connect to a real Postgres/MySQL/MSSQL server
+
+Point the script at a database you already have running, via an environment variable:
+
+```bash
+export IKIGOV_POSTGRES_URL="postgresql://user:pw@host:5432/db"
+python examples/enterprise_setup.py --dialect postgresql
+
+export IKIGOV_MYSQL_URL="mysql+pymysql://user:pw@host:3306/db"
+python examples/enterprise_setup.py --dialect mysql
+
+export IKIGOV_MSSQL_URL="mssql+pyodbc://user:pw@host:1433/db?driver=ODBC+Driver+18+for+SQL+Server"
+python examples/enterprise_setup.py --dialect mssql
+```
+
+Or pass a connection string directly for a single dialect:
+
+```bash
+python examples/enterprise_setup.py --dialect postgresql --connection-string "postgresql://user:pw@host:5432/db"
+```
+
+Connection resolution order: `--connection-string` > the matching `IKIGOV_*_URL` env var > a `connection_string`/`dsn` entry in your governance config > (SQLite only) a local file.
+
+To run every dialect in one pass, use `--dialect all` (each dialect still resolves its own connection independently):
+
+```bash
+python examples/enterprise_setup.py --dialect all --dry-run
 ```
 
 ### 4. Tear down and reset the example data
@@ -51,7 +76,7 @@ python examples/enterprise_setup.py --dialect all --teardown
 You can point the example runner at a specific governance profile or rely on environment selection:
 
 ```bash
-python examples/enterprise_setup.py --dialect postgres --config config/governance.yaml
+python examples/enterprise_setup.py --dialect postgresql --config config/governance.yaml
 ```
 
 To scan SQL data with the same shared governance YAML, use the CLI with the backend you want:
@@ -65,7 +90,7 @@ ikidgov scan --type sql --path ./data/sqlite/registry.db --table employees --own
 Or with an environment-specific profile:
 
 ```bash
-IKIGOV_ENV=dev python examples/enterprise_setup.py --dialect sqlite --dry-run
+IKIGOV_ENV=dev python examples/enterprise_setup.py --dry-run
 ```
 
 ## Config file format
@@ -89,6 +114,8 @@ connectors:
     default_type: string
 ```
 
+If a role has no password configured, `enterprise_setup.py` skips creating that role's database account (with a message telling you what to set) rather than substituting a shared or guessed password.
+
 ## Role and account walkthrough
 
 The example is designed to show the governance model as a collection of explicit identities:
@@ -102,9 +129,10 @@ The example is designed to show the governance model as a collection of explicit
 
 Each role is defined in the governance YAML and the example runner surfaces the username, permissions, and scope so the demo can be used as a guided walkthrough.
 
-## Docker backend notes
+## Notes
 
 - The setup scripts are intended for example and demonstration purposes.
 - The SQL seed files are written to be safe to re-run.
 - The runner prints progress steps so it is easier to follow what is happening.
-- You can target a single backend with `sqlite`, `postgres`, `mysql`, or `mssql` instead of `all`.
+- You can target a single backend with `sqlite`, `postgresql`, `mysql`, or `mssql` instead of `all`.
+- The script never starts, stops, or manages a database process itself — it only opens a direct connection to whatever you've configured.

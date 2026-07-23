@@ -20,8 +20,14 @@ class JSONConnector(Connector):
             rows = [payload]
         if not rows:
             return {"source": self.source, "name": path.stem, "columns": []}
+        if not all(isinstance(row, dict) for row in rows):
+            raise ValueError(
+                "JSON payload must be an object or a list of objects")
         connector_config = get_connectors_config().get("json", {})
         default_type = connector_config.get("default_type", "string")
+        if not isinstance(rows[0], dict):
+            raise ValueError(
+                "JSON payload must be an object or a list of objects")
         columns = [{"name": name, "dtype": default_type}
                    for name in rows[0].keys()]
         return {"source": self.source, "name": path.stem, "columns": columns}

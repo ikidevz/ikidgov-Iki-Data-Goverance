@@ -1,6 +1,9 @@
 import tempfile
 from pathlib import Path
 
+import pytest
+
+from ikidgov.modules.access_control.impl import AccessControlPolicyError
 from ikidgov.modules.access_control.interface import (
     create_access,
     create_permission,
@@ -124,3 +127,33 @@ def test_policy_engine_high_sensitivity_explicit_permissions_denied(monkeypatch)
     )
     assert decision.allowed is False
     assert "lacks required access" in decision.reason.lower()
+
+
+def test_access_control_run_enforces_sod_for_conflicting_roles(tmp_path):
+    db_path = str(tmp_path / "sod.db")
+
+    with pytest.raises(AccessControlPolicyError, match="separation-of-duty"):
+        create_role(
+            name="admin",
+            description="Administrator",
+            db_path=db_path,
+            role_name="admin",
+            scope="global",
+            assigned_roles=["analyst"],
+            requested_permissions=["select"],
+        )
+
+
+def test_access_control_update_emits_audit_event(monkeypatch, tmp_path):
+    db_path = str(tmp_path / "audit.db")
+    events = []
+
+    monkeypatch.setattr(
+        "ikidgov.modules.access_control.impl.emit_audit_event",
+        lambda *args, **kwargs: events.append(kwargs),
+    )
+
+    role = create_role(name="analyst", description="Analyst", db_path=db_path)
+    update_role(role["id"], description="Updated analyst", db_path=db_path)
+
+    assert any(event.get("action") == "update_role" for event in events)

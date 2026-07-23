@@ -74,5 +74,5 @@ def test_policy_compile_generates_sql_with_explicit_password(tmp_path):
                                                                  "src"), "IKIGOV_CONFIG": str(config_path)},
     )
     assert result.returncode == 0, result.stderr
-    assert "CREATE USER IF NOT EXISTS `admin`@'%' IDENTIFIED BY 'StrongPw!23';" in result.stdout
+    assert "CREATE USER IF NOT EXISTS `admin`@'localhost' IDENTIFIED BY 'StrongPw!23';" in result.stdout
     assert "GRANT SELECT ON `employees` TO `data_owner`;" in result.stdout

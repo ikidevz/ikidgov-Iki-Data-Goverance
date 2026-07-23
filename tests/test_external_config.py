@@ -90,7 +90,8 @@ roles:
     result = policy_impl.PolicyEngine().compile(
         "restrict_pii", "employees", dialect="mysql")
 
-    assert "CREATE USER IF NOT EXISTS `finance_user`@'%' IDENTIFIED BY 'StrongPw!23';" in result["sql"]
+    assert any(
+        "CREATE USER IF NOT EXISTS `finance_user`@'localhost' IDENTIFIED BY 'StrongPw!23';" in item for item in result["sql"])
 
 
 def test_config_loader_falls_back_to_current_working_directory(tmp_path, monkeypatch):

@@ -2,7 +2,7 @@ import ast
 import pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-MODULES_DIR = ROOT / "src" / "ikigov" / "modules"
+MODULES_DIR = ROOT / "src" / "ikidgov" / "modules"
 
 
 def _imports_in(file_path: pathlib.Path) -> list[str]:
@@ -27,7 +27,7 @@ def test_no_module_imports_another_modules_internals():
         if not impl_path.exists():
             continue
         imports = _imports_in(impl_path)
-        if any(name and name.startswith("ikigov.modules") and name.endswith("impl") for name in imports):
+        if any(name and name.startswith("ikidgov.modules") and name.endswith("impl") for name in imports):
             violations.append(str(impl_path))
     assert not violations, "Module isolation violated:\n" + \
         "\n".join(violations)

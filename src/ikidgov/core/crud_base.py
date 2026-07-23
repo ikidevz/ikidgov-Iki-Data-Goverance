@@ -49,12 +49,25 @@ class SqliteCrudBase:
         if raw.startswith(("postgresql://", "postgres://", "mysql://", "mysql+pymysql://", "mssql://", "mssql+pyodbc://")):
             return raw
         if self.backend in {"postgresql", "postgres"}:
-            return os.getenv("IKIGOV_POSTGRES_URL") or "postgresql://postgres:postgres@localhost:5432/postgres"
+            env_value = os.getenv("IKIGOV_POSTGRES_URL")
+            if env_value:
+                return env_value
+            raise ValueError(
+                "No PostgreSQL connection URL configured. Set IKIGOV_POSTGRES_URL.")
         if self.backend == "mysql":
-            return os.getenv("IKIGOV_MYSQL_URL") or "mysql+pymysql://root:root@localhost:3306/mysql"
+            env_value = os.getenv("IKIGOV_MYSQL_URL")
+            if env_value:
+                return env_value
+            raise ValueError(
+                "No MySQL connection URL configured. Set IKIGOV_MYSQL_URL.")
         if self.backend in {"mssql", "sqlserver"}:
-            return os.getenv("IKIGOV_MSSQL_URL") or "mssql+pyodbc://sa:YourStrong!Passw0rd@localhost:1433/master?driver=ODBC+Driver+17+for+SQL+Server"
-        return raw
+            env_value = os.getenv("IKIGOV_MSSQL_URL")
+            if env_value:
+                return env_value
+            raise ValueError(
+                "No MSSQL connection URL configured. Set IKIGOV_MSSQL_URL.")
+        raise ValueError(
+            f"No connection URL configured for backend {self.backend!r}. Set the appropriate IKIGOV_*_URL environment variable.")
 
     def _validate_identifier(self, identifier: str, kind: str = "identifier") -> None:
         from ikidgov.core.validation import validate_identifier

@@ -11,6 +11,17 @@ class AccessControlPolicyError(ValueError):
 
 class AccessControlModule(Module, SqliteCrudBase):
     name = "access_control"
+    _MUTATING_ACTIONS = {
+        "create_role": ("role", "created"),
+        "update_role": ("role", "updated"),
+        "delete_role": ("role", "deleted"),
+        "create_access": ("access", "created"),
+        "update_access": ("access", "updated"),
+        "delete_access": ("access", "deleted"),
+        "create_permission": ("permission", "created"),
+        "update_permission": ("permission", "updated"),
+        "delete_permission": ("permission", "deleted"),
+    }
 
     def __init__(self, db_path: str | None = None, backend: str = "sqlite"):
         entity_map = {
@@ -46,43 +57,98 @@ class AccessControlModule(Module, SqliteCrudBase):
         backend = kwargs.get("backend") or "sqlite"
         self.backend = backend.lower()
         self._engine = None
+        if action in self._MUTATING_ACTIONS:
+            self._validate_sod(**kwargs)
+
         if action == "create_role":
             result = self.create("role", kwargs.get(
                 "name"), kwargs.get("description"))
-            emit_audit_event(
-                "access_control_action",
-                action=action,
-                entity="role",
-                name=kwargs.get("name"),
-                result="created",
-            )
+            self._emit_mutation_audit(
+                action, "role", kwargs, result, "created")
             return result
         if action == "get_role":
             return self.get("role", kwargs.get("item_id"))
         if action == "list_roles":
             return self.list("role")
         if action == "update_role":
-            return self.update("role", kwargs.get("item_id"), **{k: v for k, v in kwargs.items() if k in {"name", "description"}})
+            result = self.update("role", kwargs.get(
+                "item_id"), **{k: v for k, v in kwargs.items() if k in {"name", "description"}})
+            self._emit_mutation_audit(
+                action, "role", kwargs, result, "updated")
+            return result
         if action == "delete_role":
-            return self.delete("role", kwargs.get("item_id"))
+            result = self.delete("role", kwargs.get("item_id"))
+            self._emit_mutation_audit(
+                action, "role", kwargs, result, "deleted")
+            return result
         if action == "create_access":
-            return self.create("access", kwargs.get("name"), kwargs.get("description"))
+            result = self.create("access", kwargs.get(
+                "name"), kwargs.get("description"))
+            self._emit_mutation_audit(
+                action, "access", kwargs, result, "created")
+            return result
         if action == "get_access":
             return self.get("access", kwargs.get("item_id"))
         if action == "list_accesses":
             return self.list("access")
         if action == "update_access":
-            return self.update("access", kwargs.get("item_id"), **{k: v for k, v in kwargs.items() if k in {"name", "description"}})
+            result = self.update("access", kwargs.get(
+                "item_id"), **{k: v for k, v in kwargs.items() if k in {"name", "description"}})
+            self._emit_mutation_audit(
+                action, "access", kwargs, result, "updated")
+            return result
         if action == "delete_access":
-            return self.delete("access", kwargs.get("item_id"))
+            result = self.delete("access", kwargs.get("item_id"))
+            self._emit_mutation_audit(
+                action, "access", kwargs, result, "deleted")
+            return result
         if action == "create_permission":
-            return self.create("permission", kwargs.get("name"), kwargs.get("description"))
+            result = self.create("permission", kwargs.get(
+                "name"), kwargs.get("description"))
+            self._emit_mutation_audit(
+                action, "permission", kwargs, result, "created")
+            return result
         if action == "get_permission":
             return self.get("permission", kwargs.get("item_id"))
         if action == "list_permissions":
             return self.list("permission")
         if action == "update_permission":
-            return self.update("permission", kwargs.get("item_id"), **{k: v for k, v in kwargs.items() if k in {"name", "description"}})
+            result = self.update("permission", kwargs.get(
+                "item_id"), **{k: v for k, v in kwargs.items() if k in {"name", "description"}})
+            self._emit_mutation_audit(
+                action, "permission", kwargs, result, "updated")
+            return result
         if action == "delete_permission":
-            return self.delete("permission", kwargs.get("item_id"))
+            result = self.delete("permission", kwargs.get("item_id"))
+            self._emit_mutation_audit(
+                action, "permission", kwargs, result, "deleted")
+            return result
         raise ValueError(action)
+
+    def _emit_mutation_audit(self, action: str, entity: str, kwargs: dict[str, Any], result: Any, outcome: str) -> None:
+        try:
+            emit_audit_event(
+                "access_control_action",
+                action=action,
+                entity=entity,
+                name=kwargs.get("name"),
+                item_id=kwargs.get("item_id"),
+                result=outcome,
+                success=bool(result),
+            )
+        except Exception:
+            pass
+
+    def _validate_sod(self, **kwargs: Any) -> None:
+        role_name = kwargs.get("role_name") or kwargs.get("name")
+        scope = kwargs.get("scope")
+        assigned_roles = kwargs.get("assigned_roles") or []
+        requested_permissions = kwargs.get("requested_permissions") or []
+        if role_name is None:
+            return
+        self.validate_access_request(
+            role_name=str(role_name),
+            scope=scope,
+            assigned_roles=list(assigned_roles),
+            requested_permissions=list(requested_permissions),
+        )

@@ -1,7 +1,10 @@
-from ikidgov.modules.access_control.roles import ROLE_DEFINITIONS
-import yaml
+import os
 import re
 from pathlib import Path
+
+import yaml
+
+from ikidgov.modules.access_control.roles import ROLE_DEFINITIONS
 
 from ikidgov.config_loader import get_accounts_config
 from ikidgov.core.audit import emit_audit_event
@@ -94,8 +97,17 @@ class PolicyEngine(Module):
             capabilities = DEFAULT_ROLE_CAPABILITIES.get(
                 normalized_role, set())
 
-        should_apply_sensitivity_gate = dataset_id is not None and column is not None
-        if should_apply_sensitivity_gate and self._column_matches_policy(policy, dataset_id, column):
+        should_apply_sensitivity_gate = dataset_id is not None or column is not None
+        if should_apply_sensitivity_gate:
+            if column is not None and dataset_id is not None:
+                should_apply_sensitivity_gate = self._column_matches_policy(
+                    policy, dataset_id, column)
+            elif dataset_id is not None:
+                should_apply_sensitivity_gate = self._dataset_has_sensitive_column(
+                    policy, dataset_id)
+            else:
+                should_apply_sensitivity_gate = True
+        if should_apply_sensitivity_gate:
             if normalized_role not in required_roles and "all" not in capabilities:
                 return Decision(False, reason=f"Role '{actor_role}' lacks required access", rule_id=policy.get("policy"))
 
@@ -178,9 +190,39 @@ class PolicyEngine(Module):
             if column_item.get("name", "").lower() != column_name:
                 continue
             sensitivity = (column_item.get("sensitivity_level") or "").lower()
-            return sensitivity in {"high", "critical"}
+            return sensitivity in self._gated_sensitivities(policy)
 
         return False
+
+    def _dataset_has_sensitive_column(self, policy: dict, dataset_id: int | None) -> bool:
+        if dataset_id is None:
+            return False
+        try:
+            from ikidgov.modules.metadata_registry.interface import get_dataset
+            dataset = get_dataset(dataset_id)
+        except Exception:
+            return True
+        if not dataset:
+            return True
+
+        gated_sensitivities = self._gated_sensitivities(policy)
+        for column_item in dataset.get("columns", []):
+            if not isinstance(column_item, dict):
+                continue
+            sensitivity = (column_item.get("sensitivity_level") or "").lower()
+            if sensitivity in gated_sensitivities:
+                return True
+        return False
+
+    def _gated_sensitivities(self, policy: dict) -> set[str]:
+        applies_to = policy.get("applies_to", {})
+        if isinstance(applies_to, dict):
+            sensitivity = applies_to.get("sensitivity")
+            if isinstance(sensitivity, str):
+                return {sensitivity.lower()}
+            if isinstance(sensitivity, list):
+                return {str(item).lower() for item in sensitivity}
+        return {"high", "critical"}
 
     def compile(self, policy_name: str, table: str, dialect: str = "generic", config_path: str | None = None, config: dict | None = None) -> dict:
         policy_path = self._resolve_policy_path(policy_name)
@@ -206,6 +248,12 @@ class PolicyEngine(Module):
                         sql.append(account_statement)
                 sql.append(self._create_role_statement(role, dialect))
                 created_roles.add(role)
+            username = self._resolve_username(
+                role, config=config, config_path=config_path)
+            assignment_statement = self._assign_role_statement(
+                role, username or role, dialect)
+            if assignment_statement:
+                sql.append(assignment_statement)
             sql.append(self._grant_statement(
                 action, quoted_table, role, dialect))
 
@@ -230,16 +278,40 @@ class PolicyEngine(Module):
         validate_identifier(role, kind="role")
         quoted = self._quote(role, dialect)
         if dialect == "mssql":
-            literal = self._string_literal(role)
+            literal = self._string_literal(role, dialect)
             return f"IF DATABASE_PRINCIPAL_ID({literal}) IS NULL CREATE ROLE {quoted};"
         if dialect in {"postgres", "postgresql"}:
-            return f"DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {self._string_literal(role)}) THEN CREATE ROLE {quoted} LOGIN; END IF; END $$;"
+            return f"DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {self._string_literal(role, dialect)}) THEN CREATE ROLE {quoted} LOGIN; END IF; END $$;"
         return f"CREATE ROLE IF NOT EXISTS {quoted};"
+
+    def _resolve_username(self, role: str, *, config: dict | None = None, config_path: str | None = None) -> str | None:
+        username = role
+        if isinstance(config, dict):
+            roles_config = config.get("roles", {})
+            if isinstance(roles_config, dict) and role in roles_config:
+                role_config = roles_config.get(role, {})
+                if isinstance(role_config, dict):
+                    account_config = role_config.get("account", {})
+                    if isinstance(account_config, dict):
+                        username = account_config.get("username", role)
+        else:
+            roles_config = get_accounts_config(config_path)
+            role_account_config = roles_config.get(
+                role, {}) if isinstance(roles_config, dict) else {}
+            if role in roles_config and isinstance(role_account_config, dict):
+                username = role_account_config.get("username", role)
+
+        if not isinstance(username, str) or not username:
+            return None
+        return username
 
     def _create_account_statement(self, role: str, dialect: str, config: dict | None = None, config_path: str | None = None) -> str:
         validate_identifier(role, kind="role")
-        username = role
+        username = self._resolve_username(
+            role, config=config, config_path=config_path) or role
         password = None
+        password_env = None
+        host = None
 
         fallback_account = ROLE_DEFINITIONS.get(role, {}).get("account", {})
         role_config_present = False
@@ -251,20 +323,22 @@ class PolicyEngine(Module):
                 if isinstance(role_config, dict):
                     account_config = role_config.get("account", {})
                     if isinstance(account_config, dict):
-                        username = account_config.get("username", role)
                         password = account_config.get("password")
+                        password_env = account_config.get("password_env")
+                        host = account_config.get("host")
         else:
             roles_config = get_accounts_config(config_path)
             role_account_config = roles_config.get(
                 role, {}) if isinstance(roles_config, dict) else {}
             if role in roles_config and isinstance(role_account_config, dict):
                 role_config_present = True
-                username = role_account_config.get("username", role)
                 password = role_account_config.get("password")
-            else:
-                username = role
-                password = None
+                password_env = role_account_config.get("password_env")
+                host = role_account_config.get("host")
 
+        if not isinstance(password, str) or not password:
+            if isinstance(password_env, str) and password_env:
+                password = os.getenv(password_env)
         if not isinstance(password, str) or not password:
             password = fallback_account.get("password")
             username = username or fallback_account.get("username", role)
@@ -278,15 +352,30 @@ class PolicyEngine(Module):
                     f"Missing password for role {role!r}. Set account.password explicitly in governance config.")
             return ""
 
+        if not isinstance(host, str) or not host:
+            host = "localhost"
         quoted_username = self._quote(username, dialect)
-        password_literal = self._string_literal(password)
+        password_literal = self._string_literal(password, dialect)
 
         if dialect == "mysql":
-            return f"CREATE USER IF NOT EXISTS {quoted_username}@'%' IDENTIFIED BY {password_literal};"
+            return f"CREATE USER IF NOT EXISTS {quoted_username}@{self._string_literal(host, dialect)} IDENTIFIED BY {password_literal};"
         if dialect in {"postgres", "postgresql"}:
-            return f"DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {self._string_literal(username)}) THEN CREATE ROLE {quoted_username} LOGIN PASSWORD {password_literal}; END IF; END $$;"
+            return f"DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {self._string_literal(username, dialect)}) THEN CREATE ROLE {quoted_username} LOGIN PASSWORD {password_literal}; END IF; END $$;"
         if dialect == "mssql":
-            return f"IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = {self._string_literal(username)}) BEGIN CREATE LOGIN {quoted_username} WITH PASSWORD = {password_literal}; END;"
+            return f"IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = {self._string_literal(username, dialect)}) BEGIN CREATE LOGIN {quoted_username} WITH PASSWORD = {password_literal}; END;"
+        return ""
+
+    def _assign_role_statement(self, role: str, username: str, dialect: str) -> str:
+        if not username:
+            return ""
+        quoted_role = self._quote(role, dialect)
+        quoted_username = self._quote(username, dialect)
+        if dialect == "mysql":
+            return f"GRANT {quoted_role} TO {quoted_username}@{self._string_literal('localhost', dialect)};"
+        if dialect in {"postgres", "postgresql"}:
+            return f"GRANT {quoted_role} TO {quoted_username};"
+        if dialect == "mssql":
+            return f"CREATE USER {quoted_username} FOR LOGIN {quoted_username}; ALTER ROLE {quoted_role} ADD MEMBER {quoted_username};"
         return ""
 
     def _grant_statement(self, action: str, quoted_table: str, role: str, dialect: str) -> str:
@@ -314,6 +403,8 @@ class PolicyEngine(Module):
         parts = table.split(".")
         return ".".join(self._quote(part, dialect) for part in parts)
 
-    def _string_literal(self, value: str) -> str:
+    def _string_literal(self, value: str, dialect: str = "generic") -> str:
         escaped = value.replace("'", "''")
+        if dialect == "mysql":
+            escaped = escaped.replace("\\", "\\\\")
         return f"'{escaped}'"
