@@ -1,13 +1,16 @@
-"""Compatibility alias for the historical ikigov package name."""
+"""Deprecated compatibility alias for the historical ikigov package name."""
 
-from pathlib import Path
-import sys
+import warnings
 
 import ikidgov
 
 __all__ = ["ikidgov"]
 
+warnings.warn(
+    "The 'ikigov' package name is deprecated; import 'ikidgov' instead.",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
 if getattr(ikidgov, "__path__", None) is not None:
     __path__ = list(ikidgov.__path__)
-
-sys.modules.setdefault("ikigov", ikidgov)

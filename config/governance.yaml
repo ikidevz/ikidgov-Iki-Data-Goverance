@@ -84,16 +84,18 @@ sqlite:
 
 postgresql:
   mode: direct
-  connection_string: postgresql://ikigov:ikigov_test_pw@localhost:5432/ikigov_test
-  dsn: postgresql://ikigov:ikigov_test_pw@localhost:5432/ikigov_test
+  connection_string_env: IKIGOV_POSTGRES_URL
+  dsn_env: IKIGOV_POSTGRES_URL
+  note: set IKIGOV_POSTGRES_URL to your PostgreSQL connection string
 
 mysql:
   mode: direct
-  connection_string: mysql+pymysql://root:ikigov_root_pw@localhost:3306/ikigov_test
-  dsn: mysql+pymysql://root:ikigov_root_pw@localhost:3306/ikigov_test
+  connection_string_env: IKIGOV_MYSQL_URL
+  dsn_env: IKIGOV_MYSQL_URL
+  note: set IKIGOV_MYSQL_URL to your MySQL connection string
 
 mssql:
   mode: direct
-  connection_string: mssql+pyodbc://sa:IkiGov_Test_Pw1!@localhost:1433/ikigov_test?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
-  dsn: mssql+pyodbc://sa:IkiGov_Test_Pw1!@localhost:1433/ikigov_test?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
-  note: install the Microsoft ODBC Driver 18 for SQL Server to connect from this host
+  connection_string_env: IKIGOV_MSSQL_URL
+  dsn_env: IKIGOV_MSSQL_URL
+  note: set IKIGOV_MSSQL_URL and install the Microsoft ODBC Driver 18 for SQL Server to connect from this host

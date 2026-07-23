@@ -5,6 +5,12 @@ No Docker required. This script provisions the example schema/tables, creates
 one scoped database account per governance role (via the shared policy-engine
 SQL compiler), and walks through the access-control and policy-check demos.
 
+Everything here is a single code path: resolve a SQLAlchemy connection string,
+then run SQL through it. There is no Docker Compose integration, no
+docker-managed credential lookup, and no `sqlcmd` subprocess — bring your own
+running database server (or use the zero-setup SQLite default) and this
+script just opens a connection to it.
+
 Connection resolution, per dialect (first match wins):
   1. --connection-string (explicit override, applies to the single --dialect given)
   2. an environment variable: IKIGOV_POSTGRES_URL / IKIGOV_MYSQL_URL / IKIGOV_MSSQL_URL
@@ -21,19 +27,13 @@ Examples:
   python examples/enterprise_setup.py --dialect all --dry-run
 
   python examples/enterprise_setup.py --dialect mysql --teardown
-
-Bring your own running database server for postgresql/mysql/mssql -- this
-script only ever opens a direct SQLAlchemy connection to it. It never starts,
-stops, or otherwise manages any database process.
 """
 from __future__ import annotations
 
 import argparse
 import os
 import re
-import shutil
 import sqlite3
-import subprocess
 import sys
 from pathlib import Path
 from typing import Iterable
@@ -123,8 +123,12 @@ TABLE_FOR_POLICY = {
 }
 
 
+class MissingConnectionError(SystemExit):
+    """Raised when a dialect has no resolvable connection string."""
+
+
 # --------------------------------------------------------------------------
-# small printing helpers
+# small printing / config helpers
 # --------------------------------------------------------------------------
 
 def _log_step(message: str) -> None:
@@ -168,6 +172,11 @@ def _load_config(path: str | os.PathLike[str] | None = None) -> dict | None:
 
 
 def _ensure_sqlite_schema_migration(db_path: Path | str) -> None:
+    """Add the `region` column to an older `customers` table, if missing.
+
+    Safe to call against a database that doesn't exist yet, or one already
+    on the current schema.
+    """
     path = Path(db_path)
     if not path.exists():
         return
@@ -175,7 +184,7 @@ def _ensure_sqlite_schema_migration(db_path: Path | str) -> None:
     try:
         columns = [row[1]
                    for row in connection.execute("PRAGMA table_info(customers)")]
-        if "region" not in columns:
+        if columns and "region" not in columns:
             connection.execute("ALTER TABLE customers ADD COLUMN region TEXT")
             connection.commit()
     finally:
@@ -183,142 +192,23 @@ def _ensure_sqlite_schema_migration(db_path: Path | str) -> None:
 
 
 def _collect_role_account_overview(config: dict | None) -> list[dict]:
-    items = _role_config_items(config)
     overview: list[dict] = []
-    for role_name, role_config in items:
+    for role_name, role_config in _role_config_items(config):
         username, password = _account_info(role_config, role_name)
-        permissions = _as_list(role_config.get("permissions", []))
         overview.append(
             {
                 "role": role_name,
                 "username": username,
                 "password": password,
-                "permissions": permissions,
+                "permissions": _as_list(role_config.get("permissions", [])),
                 "scope": role_config.get("scope"),
             }
         )
     return overview
 
 
-def _docker_available() -> bool:
-    return shutil.which("docker") is not None
-
-
-def _resolve_docker_password(config: dict | None, env_var: str, *, project_dir: Path | str | None = None, dialect: str | None = None) -> str | None:
-    value = os.getenv(env_var)
-    if value:
-        return value
-
-    if isinstance(config, dict):
-        if dialect:
-            runtime_config = config.get(dialect, {}) if isinstance(
-                config.get(dialect), dict) else {}
-            if isinstance(runtime_config, dict):
-                password = runtime_config.get("password")
-                if isinstance(password, str) and password:
-                    return password
-        password = config.get("password")
-        if isinstance(password, str) and password:
-            return password
-
-    project_path = Path(project_dir or ROOT)
-    env_file = project_path / ".env"
-    if env_file.exists():
-        for line in env_file.read_text(encoding="utf-8").splitlines():
-            if "=" not in line or line.strip().startswith("#"):
-                continue
-            key, val = line.split("=", 1)
-            if key.strip() == env_var:
-                return val.strip().strip('"').strip("'") or None
-            if env_var == "MYSQL_PWD" and key.strip() == "MYSQL_ROOT_PASSWORD":
-                return val.strip().strip('"').strip("'") or None
-            if env_var == "PGPASSWORD" and key.strip() == "POSTGRES_PASSWORD":
-                return val.strip().strip('"').strip("'") or None
-    return None
-
-
-def _run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, **kwargs)
-
-
-def _apply_direct_sql(dialect: str, sql_text: str, config: dict | None) -> None:
-    if not sql_text:
-        return
-    connection_string = None
-    if isinstance(config, dict):
-        dialect_config = config.get(dialect, {}) if isinstance(
-            config.get(dialect), dict) else {}
-        connection_string = dialect_config.get(
-            "connection_string") or dialect_config.get("dsn")
-    if not connection_string:
-        raise ValueError("No connection string configured")
-    apply_sql(connection_string, sql_text, dialect=dialect, dry_run=False)
-
-
-def _apply_sqlalchemy_direct_with_fallback(sql_text: str, connection_string: str, *, dialect: str) -> None:
-    apply_sql(connection_string, sql_text, dialect=dialect, dry_run=False)
-
-
-def validate_runtime_config(dialect: str, *, config: dict | None = None, project_dir: str | Path | None = None) -> None:
-    if dialect == "sqlite":
-        return
-    runtime_config = (config or {}).get(
-        dialect, {}) if isinstance(config, dict) else {}
-    if not isinstance(runtime_config, dict):
-        runtime_config = {}
-    mode = runtime_config.get("mode", "docker")
-    if mode == "direct":
-        connection_string = runtime_config.get(
-            "connection_string") or runtime_config.get("dsn")
-        if not connection_string:
-            raise ValueError("direct mode requires a connection_string")
-        return
-
-    password = _resolve_docker_password(
-        config, "PGPASSWORD" if dialect == "postgresql" else "MYSQL_PWD" if dialect == "mysql" else "MSSQL_SA_PASSWORD", project_dir=project_dir, dialect=dialect)
-    if not password:
-        raise ValueError("docker mode requires a password")
-
-
-def ensure_compose_up(project_dir: Path | str, compose_file: Path | str, *, dialect: str, config: dict | None = None) -> None:
-    return None
-
-
-def teardown_dialects(project_dir: Path | str, compose_file: Path | str, *, dry_run: bool, config: dict | None = None) -> None:
-    return None
-
-
-def apply_sql_file(dialect: str, sql_path: Path | str, project_dir: Path | str, compose_file: Path | str, *, dry_run: bool, config: dict | None = None) -> None:
-    path = Path(sql_path)
-    if not path.exists():
-        return
-    validate_runtime_config(dialect, config=config, project_dir=project_dir)
-    if dialect == "mssql":
-        password = _resolve_docker_password(
-            config, "MSSQL_SA_PASSWORD", project_dir=project_dir, dialect=dialect)
-        if not password:
-            password = "TestPass123!"
-        cmd = [
-            "/opt/mssql-tools18/bin/sqlcmd",
-            "-S",
-            "localhost",
-            "-U",
-            "sa",
-            "-P",
-            password,
-            "-C",
-            "-i",
-            "/dev/stdin",
-        ]
-        _run(cmd, input_bytes=path.read_bytes(), capture_output=True)
-        return
-    if dialect == "sqlite":
-        apply_setup_sql(dialect, str(path), dry_run=dry_run)
-        return
-
-
 # --------------------------------------------------------------------------
-# connection resolution -- no Docker, no subprocess
+# connection resolution -- connection strings only, no Docker involved
 # --------------------------------------------------------------------------
 
 def resolve_connection_string(
@@ -353,8 +243,14 @@ def resolve_connection_string(
             "connection_string") or dialect_config.get("dsn")
         if from_config:
             return from_config
+        for env_key in ("connection_string_env", "dsn_env"):
+            env_name = dialect_config.get(env_key)
+            if isinstance(env_name, str) and env_name:
+                from_config_env = os.getenv(env_name)
+                if from_config_env:
+                    return from_config_env
 
-    raise SystemExit(
+    raise MissingConnectionError(
         f"No connection configured for '{dialect}'. Set {env_var}, pass "
         f"--connection-string, or add a '{dialect}.connection_string' entry "
         f"to your governance config."
@@ -394,14 +290,15 @@ def _split_statements(sql_text: str, *, dialect: str) -> list[str]:
     return statements
 
 
-def apply_sql(connection_string: str, sql_text: str, *, dialect: str, dry_run: bool) -> None:
+def apply_sql(connection_string: str, sql_text: str, *, dialect: str, dry_run: bool) -> int:
+    """Execute `sql_text` against `connection_string`. Returns statement count."""
     statements = _split_statements(sql_text, dialect=dialect)
     if dry_run:
         print(
             f"[dry-run] would execute {len(statements)} statement(s) against {dialect}")
-        return
+        return len(statements)
     if not statements:
-        return
+        return 0
 
     from sqlalchemy import create_engine, text
 
@@ -412,11 +309,18 @@ def apply_sql(connection_string: str, sql_text: str, *, dialect: str, dry_run: b
                 connection.execute(text(statement))
     finally:
         engine.dispose()
+    return len(statements)
 
 
-def apply_setup_sql(dialect: str, connection_string: str, *, dry_run: bool) -> None:
+def apply_example_data(dialect: str, connection_string: str, *, dry_run: bool) -> None:
     sql_path = SETUP_SQL_FILES[dialect]
+    if not sql_path.exists():
+        return
     _log_step(f"Applying {sql_path.name} to {dialect}")
+    if dialect == "sqlite" and not dry_run:
+        db_path = connection_string.removeprefix("sqlite:///")
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        _ensure_sqlite_schema_migration(db_path)
     apply_sql(connection_string, sql_path.read_text(
         encoding="utf-8"), dialect=dialect, dry_run=dry_run)
 
@@ -431,40 +335,50 @@ def teardown_dialect(dialect: str, connection_string: str, *, dry_run: bool) -> 
 # per-role account provisioning
 # --------------------------------------------------------------------------
 
+def _roles_with_configured_passwords(config: dict | None) -> dict | None:
+    """Return `config` with any role missing a password/password_env dropped.
+
+    SQLite has no server-side users so this only matters for the other three
+    dialects. Roles without a password are skipped (with a clear message)
+    rather than silently given a shared or guessed one.
+    """
+    if not isinstance(config, dict):
+        return config
+    roles_config = config.get("roles", {})
+    if not isinstance(roles_config, dict):
+        return config
+
+    filtered_roles = {}
+    for role_name, role_config in roles_config.items():
+        if not isinstance(role_config, dict):
+            continue
+        account_config = role_config.get("account", {})
+        if not isinstance(account_config, dict):
+            continue
+        if "password" not in account_config and "password_env" not in account_config:
+            print(f"  skipped: role '{role_name}' has no configured password")
+            continue
+        filtered_roles[role_name] = role_config
+
+    effective_config = dict(config)
+    effective_config["roles"] = filtered_roles
+    return effective_config
+
+
 def provision_role_accounts(
-    project_dir: Path | str,
-    compose_file: Path | str,
     dialect: str,
+    connection_string: str,
     *,
     dry_run: bool,
     config: dict | None,
 ) -> None:
-    """Create per-role DB accounts and grants from the shared policy-engine SQL.
-
-    SQLite has no server-side users, so this is a no-op there. For every
-    other dialect, roles that don't have a password configured (via
-    account.password, or account.password_env if you've wired that up) are
-    skipped with a clear message -- never silently given a shared or
-    guessed password.
-    """
+    """Create per-role DB accounts and grants from the shared policy-engine SQL."""
     if dialect == "sqlite":
         return
 
     table_name = TABLE_FOR_POLICY[dialect]
     _log_step(f"Provisioning role accounts for {dialect}")
-    effective_config = dict(config or {}) if isinstance(config, dict) else None
-    if isinstance(effective_config, dict):
-        roles_config = effective_config.get("roles", {})
-        if isinstance(roles_config, dict):
-            for role_name, role_config in roles_config.items():
-                if not isinstance(role_config, dict):
-                    continue
-                account_config = role_config.get("account", {})
-                if not isinstance(account_config, dict):
-                    continue
-                if "password" not in account_config and "password_env" not in account_config:
-                    account_config["password"] = "ChangeMe123!"
-            effective_config["roles"] = roles_config
+    effective_config = _roles_with_configured_passwords(config)
 
     try:
         policy_sql = compile_policy_sql(
@@ -480,86 +394,13 @@ def provision_role_accounts(
         return
 
     if dialect == "mysql":
-        statements = [
-            statement.replace("@'localhost'", "@'%'")
-            for statement in statements
-        ]
+        statements = [statement.replace("@'localhost'", "@'%'")
+                      for statement in statements]
 
-    if dry_run:
-        for statement in statements:
-            print(f"  [dry-run] {statement}")
-        return
-
-    if dialect == "mssql" and config and isinstance(config.get("mssql"), dict):
-        runtime_mode = config["mssql"].get("mode", "docker")
-        if runtime_mode == "direct":
-            connection_string = config["mssql"].get(
-                "connection_string") or config["mssql"].get("dsn")
-            _apply_sqlalchemy_direct_with_fallback(
-                "\n".join(statements), connection_string, dialect=dialect)
-            return
-
-        password = _resolve_docker_password(
-            config, "MSSQL_SA_PASSWORD", project_dir=project_dir)
-        if not password:
-            password = "TestPass123!"
-        sql_text = "\n".join(statements)
-        cmd = [
-            "/opt/mssql-tools18/bin/sqlcmd",
-            "-S",
-            "localhost",
-            "-U",
-            "sa",
-            "-P",
-            password,
-            "-C",
-            "-i",
-            "/dev/stdin",
-        ]
-        _run(cmd, input_bytes=sql_text.encode("utf-8"), capture_output=True)
-        print(f"  applied {len(statements)} statement(s)")
-        return
-
-    if config and isinstance(config.get(dialect), dict):
-        _apply_direct_sql(dialect, "\n".join(statements), config)
-        print(f"  applied {len(statements)} statement(s)")
-        return
-
-    connection_string = ""
-    apply_sql(connection_string, "\n".join(
-        statements), dialect=dialect, dry_run=False)
-    print(f"  applied {len(statements)} statement(s)")
-
-
-def wipe_mssql(project_dir: Path | str, compose_file: Path | str, *, dry_run: bool, config: dict | None = None) -> None:
-    runtime_config = (config or {}).get(
-        "mssql", {}) if isinstance(config, dict) else {}
-    if not isinstance(runtime_config, dict):
-        runtime_config = {}
-    if runtime_config.get("mode") == "direct":
-        sql_text = "DROP TABLE IF EXISTS hr.employees;"
-        connection_string = runtime_config.get(
-            "connection_string") or runtime_config.get("dsn")
-        _apply_sqlalchemy_direct_with_fallback(
-            sql_text, connection_string, dialect="mssql")
-        return
-    password = _resolve_docker_password(
-        config, "MSSQL_SA_PASSWORD", project_dir=project_dir, dialect="mssql")
-    if not password:
-        password = "TestPass123!"
-    cmd = [
-        "/opt/mssql-tools18/bin/sqlcmd",
-        "-S",
-        "localhost",
-        "-U",
-        "sa",
-        "-P",
-        password,
-        "-C",
-        "-Q",
-        "DROP TABLE IF EXISTS hr.employees;",
-    ]
-    _run(cmd, input_bytes=None, capture_output=True)
+    count = apply_sql(connection_string, "\n".join(
+        statements), dialect=dialect, dry_run=dry_run)
+    if not dry_run:
+        print(f"  applied {count} statement(s)")
 
 
 def print_access_summary(dialect: str, config: dict | None) -> None:
@@ -584,22 +425,22 @@ def print_access_summary(dialect: str, config: dict | None) -> None:
 
 
 def print_role_account_overview(config: dict | None) -> None:
-    items = _role_config_items(config)
-    if not items:
+    overview = _collect_role_account_overview(config)
+    if not overview:
         print("No role/account overview available from the current governance config.")
         return
 
     _print_section("Role and account overview")
-    for role_name, role_config in items:
-        username, _ = _account_info(role_config, role_name)
-        permissions = _as_list(role_config.get("permissions", []))
-        scope = role_config.get("scope")
+    items = dict(_role_config_items(config))
+    for entry in overview:
+        role_config = items.get(entry["role"], {})
         print(
-            f"- {role_name}: {role_config.get('description', '') or 'no description'}")
-        print(f"  username: {username}")
+            f"- {entry['role']}: {role_config.get('description', '') or 'no description'}")
+        print(f"  username: {entry['username']}")
         print(
-            f"  permissions: {', '.join(permissions) if permissions else 'none'}")
-        print(f"  scope: {scope if scope is not None else 'not set'}")
+            f"  permissions: {', '.join(entry['permissions']) if entry['permissions'] else 'none'}")
+        print(
+            f"  scope: {entry['scope'] if entry['scope'] is not None else 'not set'}")
 
 
 # --------------------------------------------------------------------------
@@ -694,8 +535,7 @@ def _demo_enterprise_role_validation(config: dict | None) -> None:
 
 def _demo_account_role_access(config: dict | None) -> None:
     _print_section("Role access implementation demo")
-    items = _role_config_items(config)
-    for role_name, role_config in items:
+    for role_name, role_config in _role_config_items(config):
         username, password = _account_info(role_config, role_name)
         permissions = _as_list(role_config.get("permissions", []))
         print(f"- role: {role_name}")
@@ -735,23 +575,42 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--dialect", choices=[*ALL_DIALECTS, "all"], default="sqlite")
-    parser.add_argument("--connection-string",
-                        help="Explicit connection string, used only with a single --dialect (not 'all').")
+    parser.add_argument(
+        "--connection-string",
+        help="Explicit connection string, used only with a single --dialect (not 'all').",
+    )
     parser.add_argument("--sqlite-path", type=Path,
                         default=ROOT / "data" / "sqlite" / "registry.db")
-    parser.add_argument("--config", type=Path,
-                        help="Optional governance YAML config. If omitted, uses the project config loader and IKIGOV_ENV.")
+    parser.add_argument(
+        "--config", type=Path,
+        help="Optional governance YAML config. If omitted, uses the project config loader and IKIGOV_ENV.",
+    )
     parser.add_argument("--dry-run", action="store_true",
                         help="Show what would run without executing anything")
     parser.add_argument("--teardown", action="store_true",
                         help="Drop the example tables/schemas before re-applying setup SQL")
     parser.add_argument("--skip-demo", action="store_true",
                         help="Skip the access-control and policy demos")
-    parser.add_argument("--project-dir", type=Path, default=ROOT,
-                        help="Project root used when resolving .env files and compose paths")
-    parser.add_argument("--compose-file", type=Path, default=ROOT / "docker-compose.yml",
-                        help="Optional compose file path for docker-based execution")
     return parser.parse_args(list(argv) if argv is not None else None)
+
+
+def _run_dialect(dialect: str, args: argparse.Namespace, config: dict | None) -> None:
+    if dialect == "sqlite":
+        args.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+
+    connection_string = resolve_connection_string(
+        dialect,
+        cli_override=args.connection_string,
+        config=config,
+        sqlite_path=args.sqlite_path,
+    )
+
+    if args.teardown:
+        teardown_dialect(dialect, connection_string, dry_run=args.dry_run)
+    apply_example_data(dialect, connection_string, dry_run=args.dry_run)
+    provision_role_accounts(dialect, connection_string,
+                            dry_run=args.dry_run, config=config)
+    print_access_summary(dialect, config)
 
 
 def main(argv: Iterable[str] | None = None) -> int:
@@ -781,44 +640,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                   "enterprise-crud-demo.db")
 
     for dialect in dialects:
-        if dialect == "sqlite":
-            args.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
-            connection_string = resolve_connection_string(
-                dialect,
-                cli_override=args.connection_string,
-                config=config,
-                sqlite_path=args.sqlite_path,
-            )
-            if args.teardown:
-                teardown_dialect(dialect, connection_string,
-                                 dry_run=args.dry_run)
-            apply_sql_file(dialect, SETUP_SQL_FILES[dialect], args.project_dir,
-                           args.compose_file, dry_run=args.dry_run, config=config)
-            provision_role_accounts(
-                args.project_dir, args.compose_file, dialect, dry_run=args.dry_run, config=config)
-            print_access_summary(dialect, config)
-            continue
-
-        compose_file = args.compose_file if args.compose_file else ROOT / "docker-compose.yml"
-        if _docker_available() and compose_file.exists():
-            ensure_compose_up(args.project_dir, compose_file,
-                              dialect=dialect, config=config)
-            connection_string = "sqlite:///placeholder"
-        else:
-            connection_string = resolve_connection_string(
-                dialect,
-                cli_override=args.connection_string,
-                config=config,
-                sqlite_path=args.sqlite_path,
-            )
-
-        if args.teardown:
-            teardown_dialect(dialect, connection_string, dry_run=args.dry_run)
-        apply_sql_file(dialect, SETUP_SQL_FILES[dialect], args.project_dir,
-                       compose_file, dry_run=args.dry_run, config=config)
-        provision_role_accounts(
-            args.project_dir, compose_file, dialect, dry_run=args.dry_run, config=config)
-        print_access_summary(dialect, config)
+        _run_dialect(dialect, args, config)
 
     _log_step("Enterprise example setup complete")
     return 0

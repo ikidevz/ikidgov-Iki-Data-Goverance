@@ -18,6 +18,16 @@ class PolicyLifecycleError(ValueError):
 
 
 _POLICY_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_PASSWORD_SQL_RE = re.compile(
+    r"(IDENTIFIED BY|PASSWORD\s*=|LOGIN PASSWORD)\s*'([^']*)'",
+    re.IGNORECASE,
+)
+
+
+def redact_sql_secrets(statements: list[str]) -> list[str]:
+    """Return a copy of SQL statements with embedded password literals masked."""
+    return [_PASSWORD_SQL_RE.sub(lambda match: f"{match.group(1)} '********'", statement) for statement in statements]
+
 
 DEFAULT_ROLE_CAPABILITIES = {
     "admin": {"all"},
@@ -180,7 +190,7 @@ class PolicyEngine(Module):
             dataset = get_dataset(dataset_id)
         except Exception:
             return True
-        if not dataset:
+        if not isinstance(dataset, dict):
             return True
 
         column_name = column.lower()
@@ -192,7 +202,7 @@ class PolicyEngine(Module):
             sensitivity = (column_item.get("sensitivity_level") or "").lower()
             return sensitivity in self._gated_sensitivities(policy)
 
-        return False
+        return True
 
     def _dataset_has_sensitive_column(self, policy: dict, dataset_id: int | None) -> bool:
         if dataset_id is None:
@@ -202,7 +212,7 @@ class PolicyEngine(Module):
             dataset = get_dataset(dataset_id)
         except Exception:
             return True
-        if not dataset:
+        if not isinstance(dataset, dict):
             return True
 
         gated_sensitivities = self._gated_sensitivities(policy)

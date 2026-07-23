@@ -12,5 +12,5 @@ examples/output/
 .pytest_cache/
 .vscode/
 .env
-registry.db
+*.db
 *.log

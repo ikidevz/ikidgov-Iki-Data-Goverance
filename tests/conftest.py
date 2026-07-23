@@ -3,7 +3,7 @@ import pytest
 
 
 def discover_modules():
-    return [ep.load()() for ep in importlib.metadata.entry_points(group="4p.modules")]
+    return [ep.load()() for ep in importlib.metadata.entry_points(group="ikidgov.modules")]
 
 
 @pytest.fixture(scope="session")

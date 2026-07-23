@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 import time
 from pathlib import Path
@@ -32,6 +33,20 @@ class SQLConnector(Connector):
             return backend_config
         return {}
 
+    def _get_connection_string(self) -> str | None:
+        backend_config = self._get_backend_config()
+        for key in ("connection_string", "dsn"):
+            value = backend_config.get(key)
+            if isinstance(value, str) and value:
+                return value
+        for key in ("connection_string_env", "dsn_env"):
+            env_name = backend_config.get(key)
+            if isinstance(env_name, str) and env_name:
+                value = os.getenv(env_name)
+                if value:
+                    return value
+        return None
+
     def _discover_sqlite(self, table_name: str) -> list[dict[str, Any]]:
         path = Path(self.path)
         if not path.exists():
@@ -50,9 +65,7 @@ class SQLConnector(Connector):
             raise RuntimeError(
                 "SQLAlchemy is required for non-sqlite SQL discovery") from exc
 
-        backend_config = self._get_backend_config()
-        connection_string = backend_config.get(
-            "connection_string") or backend_config.get("dsn")
+        connection_string = self._get_connection_string()
         if not connection_string:
             raise ValueError(
                 f"No connection string configured for backend '{self.backend}'")

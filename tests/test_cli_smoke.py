@@ -74,5 +74,45 @@ def test_policy_compile_generates_sql_with_explicit_password(tmp_path):
                                                                  "src"), "IKIGOV_CONFIG": str(config_path)},
     )
     assert result.returncode == 0, result.stderr
-    assert "CREATE USER IF NOT EXISTS `admin`@'localhost' IDENTIFIED BY 'StrongPw!23';" in result.stdout
+    assert "CREATE USER IF NOT EXISTS `admin`@'localhost' IDENTIFIED BY '********';" in result.stdout
     assert "GRANT SELECT ON `employees` TO `data_owner`;" in result.stdout
+    assert "StrongPw!23" not in result.stdout
+
+
+def test_policy_compile_reveal_secrets_flag_prints_real_password(tmp_path):
+    config_path = tmp_path / "governance.yaml"
+    config_path.write_text(
+        """roles:
+  admin:
+    account:
+      username: admin
+      password: StrongPw!23
+""",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "ikidgov.cli.main", "policy-compile", "--policy",
+            "restrict_pii", "--table", "employees", "--dialect", "mysql", "--reveal-secrets"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        env={**dict(__import__("os").environ), "PYTHONPATH": str(ROOT /
+                                                                 "src"), "IKIGOV_CONFIG": str(config_path)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "StrongPw!23" in result.stdout
+    assert "IDENTIFIED BY 'StrongPw!23'" in result.stdout
+
+
+def test_register_dataset_requires_actor_role():
+    result = subprocess.run(
+        [sys.executable, "-m", "ikidgov.cli.main", "register-dataset",
+            "--source", "demo", "--name", "demo", "--owner", "tester"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        env={**dict(__import__("os").environ),
+             "PYTHONPATH": str(ROOT / "src")},
+    )
+    assert result.returncode != 0
+    assert "actor-role" in result.stderr.lower()

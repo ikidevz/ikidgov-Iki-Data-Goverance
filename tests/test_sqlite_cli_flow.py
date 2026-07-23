@@ -29,7 +29,7 @@ def test_scan_cli_accepts_backend_argument_for_sqlite():
         scan = subprocess.run(
             [sys.executable, "-m", "ikidgov.cli.main", "scan", "--type", "sql",
                 "--path", str(db_path), "--table", "customers", "--owner", "jdoe",
-                "--backend", "sqlite"],
+                "--backend", "sqlite", "--actor-role", "admin"],
             cwd=ROOT,
             text=True,
             capture_output=True,
@@ -59,7 +59,7 @@ def test_sqlite_scan_classify_and_policy_check_work_end_to_end():
 
         scan = subprocess.run(
             [sys.executable, "-m", "ikidgov.cli.main", "scan", "--type", "sql",
-                "--path", str(db_path), "--table", "customers", "--owner", "jdoe"],
+                "--path", str(db_path), "--table", "customers", "--owner", "jdoe", "--actor-role", "admin"],
             cwd=ROOT,
             text=True,
             capture_output=True,
@@ -69,7 +69,7 @@ def test_sqlite_scan_classify_and_policy_check_work_end_to_end():
 
         classify = subprocess.run(
             [sys.executable, "-m", "ikidgov.cli.main", "classify",
-                "--dataset-id", "1", "--detector", "builtin"],
+                "--dataset-id", "1", "--detector", "builtin", "--actor-role", "admin"],
             cwd=ROOT,
             text=True,
             capture_output=True,

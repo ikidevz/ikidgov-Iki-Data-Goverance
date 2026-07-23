@@ -7,12 +7,16 @@ from ikidgov.connectors.csv_connector import CSVConnector
 from ikidgov.connectors.json_connector import JSONConnector
 from ikidgov.connectors.sql_connector import SQLConnector
 from ikidgov.modules.metadata_registry import interface as registry
+from ikidgov.modules.policy_engine import interface as policy
 
 
 class ScanCommand(BaseCommand):
     name = "scan"
 
     def _handle(self, args: argparse.Namespace) -> dict:
+        decision = policy.check(actor_role=args.actor_role, action_type="read")
+        if not decision.allowed:
+            raise PermissionError(decision.reason)
         connector = self._get_connector(args)
         discovered = connector.discover()
         dataset = registry.register_dataset(

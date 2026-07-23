@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +11,8 @@ try:
     import fcntl
 except ImportError:  # pragma: no cover - Windows
     fcntl = None
+
+logger = logging.getLogger("ikidgov.audit")
 
 
 def _audit_log_path() -> Path:
@@ -45,8 +48,13 @@ def emit_audit_event(event: str, **details: Any) -> dict[str, Any]:
             with log_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(payload, sort_keys=True))
                 handle.write("\n")
-    except Exception:
-        pass
+        try:
+            if hasattr(os, "chmod"):
+                os.chmod(log_path, 0o600)
+        except OSError:
+            pass
+    except Exception as exc:
+        logger.exception("Failed to emit audit event %s", event, exc_info=exc)
 
     return payload
 
@@ -60,7 +68,8 @@ def _rotate_if_needed(path: Path, *, max_bytes: int = 10_485_760) -> None:
     except OSError:
         return
 
-    rotated = path.with_suffix(path.suffix + ".1")
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
+    rotated = path.parent / f"{path.name}.{timestamp}"
     if rotated.exists():
         rotated.unlink()
     path.rename(rotated)

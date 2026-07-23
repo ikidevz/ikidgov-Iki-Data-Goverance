@@ -10,11 +10,11 @@ dependencies = ["pyyaml>=6.0,<7.0", "sqlalchemy>=2.0,<3.0", "pyodbc>=5.0,<6.0", 
 dev = ["pytest>=7.0"]
 iki_pii_masker = ["iki-pii-masker>=0.1.0"]
 
-[project.entry-points."4p.detectors"]
+[project.entry-points."ikidgov.detectors"]
 builtin = "ikidgov.detectors.builtin_detector:BuiltinDetector"
 iki_pii_masker = "ikidgov.detectors.iki_pii_masker_detector:IkiPIIMaskerDetector"
 
-[project.entry-points."4p.modules"]
+[project.entry-points."ikidgov.modules"]
 example_module = "ikidgov.modules.example_module.impl:ExampleModule"
 metadata_registry = "ikidgov.modules.metadata_registry.impl:MetadataRegistry"
 classification_engine = "ikidgov.modules.classification_engine.impl:ClassificationEngine"

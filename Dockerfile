@@ -15,10 +15,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
+COPY pyproject.toml ./
+COPY src ./src
 RUN pip install --no-cache-dir -e .
+COPY . .
 
 RUN groupadd --system ikidgov && useradd --system --gid ikidgov --home /app ikidgov \
     && chown -R ikidgov:ikidgov /app

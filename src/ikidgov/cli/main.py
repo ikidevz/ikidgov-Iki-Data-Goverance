@@ -40,6 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
             subparser.set_defaults(
                 handler=lambda args, command=command: _run_command(command, args))
         elif command.name == "register-dataset":
+            subparser.add_argument("--actor-role", required=True)
             subparser.add_argument("--source", required=True)
             subparser.add_argument("--name", required=True)
             subparser.add_argument("--owner")
@@ -48,9 +49,11 @@ def build_parser() -> argparse.ArgumentParser:
             subparser.set_defaults(
                 handler=lambda args, command=command: _run_command(command, args))
         elif command.name == "list-datasets":
+            subparser.add_argument("--actor-role", required=True)
             subparser.set_defaults(
                 handler=lambda args, command=command: _run_command(command, args))
         elif command.name == "scan":
+            subparser.add_argument("--actor-role", required=True)
             subparser.add_argument(
                 "--type", choices=["csv", "json", "sql"], required=True)
             subparser.add_argument("--path")
@@ -70,6 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
             subparser.set_defaults(
                 handler=lambda args, command=command: _run_command(command, args))
         elif command.name == "classify":
+            subparser.add_argument("--actor-role", required=True)
             subparser.add_argument("--dataset-id", type=int, required=True)
             subparser.add_argument("--detector", default="builtin")
             subparser.set_defaults(
@@ -94,6 +98,11 @@ def build_parser() -> argparse.ArgumentParser:
                 choices=["generic", "mysql",
                          "postgres", "postgresql", "mssql"],
                 default="generic",
+            )
+            subparser.add_argument(
+                "--reveal-secrets",
+                action="store_true",
+                help="Print the unredacted SQL instead of the default redacted output",
             )
             subparser.set_defaults(
                 handler=lambda args, command=command: _run_command(command, args))

@@ -1,8 +1,11 @@
+import logging
 from typing import Any
 
 from ikidgov.core.audit import emit_audit_event
 from ikidgov.core.module_base import Module
 from ikidgov.core.crud_base import SqliteCrudBase
+
+logger = logging.getLogger("ikidgov.access_control")
 
 
 class AccessControlPolicyError(ValueError):
@@ -137,7 +140,8 @@ class AccessControlModule(Module, SqliteCrudBase):
                 success=bool(result),
             )
         except Exception:
-            pass
+            logger.exception(
+                "Failed to emit access-control audit event for %s", action)
 
     def _validate_sod(self, **kwargs: Any) -> None:
         role_name = kwargs.get("role_name") or kwargs.get("name")

@@ -56,6 +56,10 @@ class MetadataRegistry(Module):
             conn.commit()
         finally:
             conn.close()
+        try:
+            os.chmod(self.db_path, 0o600)
+        except OSError:
+            pass
 
     def describe(self) -> dict[str, Any]:
         return {"name": self.name, "actions": ["register_dataset", "register_column", "get_dataset", "list_datasets"]}

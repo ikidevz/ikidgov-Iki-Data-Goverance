@@ -1,6 +1,5 @@
 import importlib.util
 import sqlite3
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -53,6 +52,12 @@ def test_sqlite_schema_migration_adds_missing_region_column(tmp_path):
         connection.close()
 
     assert "region" in columns
+
+
+def test_sqlite_schema_migration_is_a_noop_for_missing_database(tmp_path):
+    module = _load_enterprise_setup_module()
+    # Should not raise even though the file doesn't exist yet.
+    module._ensure_sqlite_schema_migration(tmp_path / "does-not-exist.db")
 
 
 def test_collects_role_account_overview_from_config():
@@ -108,85 +113,266 @@ def test_print_access_summary_uses_configured_permissions(capsys):
     assert "Secret123!" not in output
 
 
-def test_main_uses_compose_for_sql_backends_when_docker_is_available(monkeypatch, tmp_path):
+def test_print_role_account_overview_includes_description(capsys):
     module = _load_enterprise_setup_module()
-    compose_file = tmp_path / "docker-compose.yml"
-    compose_file.write_text("version: '3'\n", encoding="utf-8")
-    calls: list[str] = []
+    config = {
+        "roles": {
+            "admin": {
+                "description": "Platform administrator",
+                "account": {"username": "admin_user"},
+                "permissions": ["all"],
+                "scope": None,
+            },
+        }
+    }
 
-    monkeypatch.setattr(module, "_load_config", lambda path: None)
-    monkeypatch.setattr(module, "_docker_available", lambda: True)
-    monkeypatch.setattr(module, "ensure_compose_up",
-                        lambda *args, **kwargs: calls.append("compose"))
-    monkeypatch.setattr(module, "_demo_access_control_crud", lambda: None)
-    monkeypatch.setattr(module, "_demo_policy_permissions", lambda: None)
-    monkeypatch.setattr(
-        module, "_demo_enterprise_role_validation", lambda config=None: None)
-    monkeypatch.setattr(module, "_demo_account_role_access",
-                        lambda config=None: None)
-    monkeypatch.setattr(module, "apply_sql_file",
-                        lambda *args, **kwargs: calls.append("apply"))
-    monkeypatch.setattr(module, "provision_role_accounts",
-                        lambda *args, **kwargs: calls.append("provision"))
-    monkeypatch.setattr(module, "print_access_summary",
-                        lambda *args, **kwargs: None)
-    monkeypatch.setattr(module, "teardown_dialects",
-                        lambda *args, **kwargs: None)
+    module.print_role_account_overview(config)
 
-    result = module.main([
-        "--dialect",
-        "mssql",
-        "--skip-demo",
-        "--project-dir",
-        str(tmp_path),
-        "--compose-file",
-        str(compose_file),
-    ])
-
-    assert result == 0
-    assert "compose" in calls
-    assert "apply" in calls
-    assert "provision" in calls
+    output = capsys.readouterr().out
+    assert "Platform administrator" in output
+    assert "admin_user" in output
+    assert "not set" in output
 
 
-def test_main_defaults_to_direct_sql_connections_without_compose(monkeypatch, tmp_path):
+def test_resolve_connection_string_prefers_cli_override():
     module = _load_enterprise_setup_module()
-    compose_file = tmp_path / "docker-compose.yml"
-    compose_file.write_text("version: '3'\n", encoding="utf-8")
-    calls: list[str] = []
 
-    monkeypatch.setattr(module, "_load_config", lambda path: None)
-    monkeypatch.setattr(module, "ensure_compose_up",
-                        lambda *args, **kwargs: calls.append("compose"))
-    monkeypatch.setattr(module, "_demo_access_control_crud", lambda: None)
-    monkeypatch.setattr(module, "_demo_policy_permissions", lambda: None)
-    monkeypatch.setattr(
-        module, "_demo_enterprise_role_validation", lambda config=None: None)
-    monkeypatch.setattr(module, "_demo_account_role_access",
-                        lambda config=None: None)
-    monkeypatch.setattr(module, "apply_sql_file",
-                        lambda *args, **kwargs: calls.append("apply"))
-    monkeypatch.setattr(module, "provision_role_accounts",
-                        lambda *args, **kwargs: calls.append("provision"))
-    monkeypatch.setattr(module, "print_access_summary",
-                        lambda *args, **kwargs: None)
-    monkeypatch.setattr(module, "teardown_dialects",
-                        lambda *args, **kwargs: None)
+    result = module.resolve_connection_string(
+        "postgresql",
+        cli_override="postgresql://cli-wins",
+        config={"postgresql": {"connection_string": "postgresql://config-loses"}},
+        sqlite_path=Path("/tmp/registry.db"),
+    )
 
-    result = module.main([
-        "--dialect",
+    assert result == "postgresql://cli-wins"
+
+
+def test_resolve_connection_string_falls_back_to_env(monkeypatch):
+    module = _load_enterprise_setup_module()
+    monkeypatch.setenv("IKIGOV_POSTGRES_URL", "postgresql://from-env")
+
+    result = module.resolve_connection_string(
+        "postgresql",
+        cli_override=None,
+        config=None,
+        sqlite_path=Path("/tmp/registry.db"),
+    )
+
+    assert result == "postgresql://from-env"
+
+
+def test_resolve_connection_string_falls_back_to_config(monkeypatch):
+    module = _load_enterprise_setup_module()
+    monkeypatch.delenv("IKIGOV_MYSQL_URL", raising=False)
+
+    result = module.resolve_connection_string(
+        "mysql",
+        cli_override=None,
+        config={"mysql": {"dsn": "mysql+pymysql://from-config"}},
+        sqlite_path=Path("/tmp/registry.db"),
+    )
+
+    assert result == "mysql+pymysql://from-config"
+
+
+def test_resolve_connection_string_sqlite_defaults_to_local_file():
+    module = _load_enterprise_setup_module()
+    sqlite_path = Path("/tmp/example-registry.db")
+
+    result = module.resolve_connection_string(
         "sqlite",
+        cli_override=None,
+        config=None,
+        sqlite_path=sqlite_path,
+    )
+
+    assert result == f"sqlite:///{sqlite_path}"
+
+
+def test_resolve_connection_string_raises_actionable_error_when_unconfigured(monkeypatch):
+    module = _load_enterprise_setup_module()
+    monkeypatch.delenv("IKIGOV_MSSQL_URL", raising=False)
+
+    with pytest.raises(SystemExit, match="IKIGOV_MSSQL_URL"):
+        module.resolve_connection_string(
+            "mssql",
+            cli_override=None,
+            config=None,
+            sqlite_path=Path("/tmp/registry.db"),
+        )
+
+
+def test_apply_sql_dry_run_does_not_touch_sqlalchemy():
+    module = _load_enterprise_setup_module()
+
+    count = module.apply_sql(
+        "sqlite:///:memory:",
+        "CREATE TABLE t (id INTEGER); INSERT INTO t VALUES (1);",
+        dialect="sqlite",
+        dry_run=True,
+    )
+
+    assert count == 2
+
+
+def test_apply_sql_executes_statements_against_sqlite(tmp_path):
+    module = _load_enterprise_setup_module()
+    db_path = tmp_path / "apply.db"
+
+    count = module.apply_sql(
+        f"sqlite:///{db_path}",
+        "CREATE TABLE t (id INTEGER); INSERT INTO t VALUES (1);",
+        dialect="sqlite",
+        dry_run=False,
+    )
+
+    assert count == 2
+    connection = sqlite3.connect(db_path)
+    try:
+        assert connection.execute("SELECT id FROM t").fetchall() == [(1,)]
+    finally:
+        connection.close()
+
+
+def test_split_statements_handles_mssql_go_batches():
+    module = _load_enterprise_setup_module()
+    sql_text = "SELECT 1;\nGO\nSELECT 2; SELECT 3;\nGO\n"
+
+    statements = module._split_statements(sql_text, dialect="mssql")
+
+    assert statements == ["SELECT 1;", "SELECT 2; SELECT 3;"]
+
+
+def test_provision_role_accounts_skips_roles_without_passwords(monkeypatch):
+    module = _load_enterprise_setup_module()
+    captured: list[dict] = []
+
+    def fake_apply_sql(connection_string, sql_text, *, dialect, dry_run):
+        captured.append({"connection_string": connection_string,
+                        "sql_text": sql_text, "dialect": dialect})
+        return 1
+
+    monkeypatch.setattr(module, "apply_sql", fake_apply_sql)
+
+    module.provision_role_accounts(
+        "postgresql",
+        "postgresql://example",
+        dry_run=False,
+        config={
+            "roles": {
+                "admin": {"account": {"username": "admin", "password": "StrongPw!23"}},
+                "analyst": {},
+            },
+        },
+    )
+
+    assert captured
+    assert "StrongPw!23" in captured[0]["sql_text"]
+
+
+def test_provision_role_accounts_uses_configured_roles_and_accounts(monkeypatch):
+    module = _load_enterprise_setup_module()
+    captured: list[dict] = []
+
+    def fake_apply_sql(connection_string, sql_text, *, dialect, dry_run):
+        captured.append(
+            {"connection_string": connection_string, "sql_text": sql_text})
+        return 1
+
+    monkeypatch.setattr(module, "apply_sql", fake_apply_sql)
+
+    module.provision_role_accounts(
+        "mysql",
+        "mysql+pymysql://example",
+        dry_run=False,
+        config={
+            "roles": {
+                "admin": {"account": {"username": "finance_user", "password": "StrongPw!23"}},
+                "data_owner": {"account": {"username": "data_owner", "password": "DataOwnerPw!23"}},
+                "analyst": {},
+            }
+        },
+    )
+
+    assert captured
+    sql_payload = captured[0]["sql_text"]
+    assert "CREATE USER IF NOT EXISTS `finance_user`@'%' IDENTIFIED BY 'StrongPw!23';" in sql_payload
+
+
+def test_provision_role_accounts_is_noop_for_sqlite(monkeypatch):
+    module = _load_enterprise_setup_module()
+    calls = []
+    monkeypatch.setattr(module, "apply_sql", lambda *a, **k: calls.append(1))
+
+    module.provision_role_accounts(
+        "sqlite", "sqlite:///ignored.db", dry_run=False, config={})
+
+    assert calls == []
+
+
+def test_main_resolves_direct_connection_strings_for_sql_backends(monkeypatch, tmp_path):
+    module = _load_enterprise_setup_module()
+    calls: list[str] = []
+
+    monkeypatch.setattr(module, "_load_config", lambda path: None)
+    monkeypatch.setattr(module, "run_demos", lambda *a, **k: None)
+    monkeypatch.setattr(module, "apply_example_data",
+                        lambda *args, **kwargs: calls.append("apply"))
+    monkeypatch.setattr(module, "provision_role_accounts",
+                        lambda *args, **kwargs: calls.append("provision"))
+    monkeypatch.setattr(module, "print_access_summary",
+                        lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        module,
+        "resolve_connection_string",
+        lambda *args, **kwargs: calls.append(
+            "resolved") or "mssql+pyodbc://example",
+    )
+
+    result = module.main([
+        "--dialect", "mssql",
         "--skip-demo",
-        "--project-dir",
-        str(tmp_path),
-        "--compose-file",
-        str(compose_file),
+        "--sqlite-path", str(tmp_path / "registry.db"),
     ])
 
     assert result == 0
-    assert "compose" not in calls
+    assert calls == ["resolved", "apply", "provision"]
+
+
+def test_main_defaults_to_direct_sql_connections(monkeypatch, tmp_path):
+    module = _load_enterprise_setup_module()
+    calls: list[str] = []
+
+    monkeypatch.setattr(module, "_load_config", lambda path: None)
+    monkeypatch.setattr(module, "run_demos", lambda *a, **k: None)
+    monkeypatch.setattr(module, "apply_example_data",
+                        lambda *args, **kwargs: calls.append("apply"))
+    monkeypatch.setattr(module, "provision_role_accounts",
+                        lambda *args, **kwargs: calls.append("provision"))
+    monkeypatch.setattr(module, "print_access_summary",
+                        lambda *args, **kwargs: None)
+
+    result = module.main([
+        "--dialect", "sqlite",
+        "--skip-demo",
+        "--sqlite-path", str(tmp_path / "registry.db"),
+    ])
+
+    assert result == 0
     assert "apply" in calls
     assert "provision" in calls
+
+
+def test_main_rejects_connection_string_with_all_dialects(tmp_path):
+    module = _load_enterprise_setup_module()
+
+    with pytest.raises(SystemExit, match="single --dialect"):
+        module.main([
+            "--dialect", "all",
+            "--connection-string", "postgresql://example",
+            "--skip-demo",
+            "--sqlite-path", str(tmp_path / "registry.db"),
+        ])
 
 
 def test_demo_account_role_access_uses_configured_accounts(capsys):
@@ -241,269 +427,3 @@ def test_demo_enterprise_role_validation_prints_multi_role_matrix(capsys):
     assert "mysql" in output
     assert "postgresql" in output
     assert "mssql" in output
-
-
-def test_resolve_docker_password_falls_back_to_dotenv_file(tmp_path, monkeypatch):
-    module = _load_enterprise_setup_module()
-    env_file = tmp_path / ".env"
-    env_file.write_text("POSTGRES_PASSWORD=from-dotenv\n", encoding="utf-8")
-    monkeypatch.delenv("PGPASSWORD", raising=False)
-    monkeypatch.delenv("POSTGRES_PASSWORD", raising=False)
-
-    password = module._resolve_docker_password(
-        {}, "PGPASSWORD", project_dir=tmp_path)
-
-    assert password == "from-dotenv"
-
-
-def test_resolve_docker_password_uses_mysql_root_password_from_dotenv(tmp_path, monkeypatch):
-    module = _load_enterprise_setup_module()
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "MYSQL_ROOT_PASSWORD=from-root-dotenv\n", encoding="utf-8")
-    monkeypatch.delenv("MYSQL_PWD", raising=False)
-    monkeypatch.delenv("MYSQL_ROOT_PASSWORD", raising=False)
-
-    password = module._resolve_docker_password(
-        {}, "MYSQL_PWD", project_dir=tmp_path)
-
-    assert password == "from-root-dotenv"
-
-
-def test_provision_role_accounts_uses_demo_passwords_for_missing_account_passwords(monkeypatch, tmp_path):
-    module = _load_enterprise_setup_module()
-    captured: list[dict] = []
-
-    def fake_apply_direct_sql(dialect, sql_text, config):
-        captured.append(
-            {"dialect": dialect, "sql_text": sql_text, "config": config})
-
-    monkeypatch.setattr(module, "_apply_direct_sql", fake_apply_direct_sql)
-
-    module.provision_role_accounts(
-        tmp_path,
-        tmp_path / "docker-compose.yml",
-        "postgresql",
-        dry_run=False,
-        config={
-            "postgresql": {"password": "TestPass123!"},
-            "roles": {
-                "admin": {"account": {"username": "admin"}},
-                "analyst": {},
-            },
-        },
-    )
-
-    assert captured
-    sql_payload = captured[0]["sql_text"]
-    assert "ChangeMe123!" in sql_payload
-
-
-def test_provision_role_accounts_uses_schema_qualified_table_for_mssql(monkeypatch, tmp_path):
-    module = _load_enterprise_setup_module()
-    captured: list[tuple[list[str], dict]] = []
-
-    def fake_run(cmd, **kwargs):
-        captured.append((cmd, kwargs))
-        return subprocess.CompletedProcess(cmd, 0, b"", b"")
-
-    monkeypatch.setattr(module, "_run", fake_run)
-
-    module.provision_role_accounts(
-        tmp_path,
-        tmp_path / "docker-compose.yml",
-        "mssql",
-        dry_run=False,
-        config={
-            "mssql": {"password": "TestPass123!"},
-            "roles": {
-                "admin": {
-                    "account": {"username": "admin", "password": "StrongPw!23"}
-                },
-                "data_owner": {
-                    "account": {"username": "data_owner", "password": "DataOwnerPw!23"}
-                },
-            }
-        },
-    )
-
-    assert captured
-    sql_payload = captured[0][1]["input_bytes"].decode("utf-8")
-    assert "[hr].[employees]" in sql_payload
-
-
-def test_provision_role_accounts_uses_sqlalchemy_fallback_for_mssql_direct_connection(monkeypatch, tmp_path):
-    module = _load_enterprise_setup_module()
-    captured: list[tuple[str, str, str]] = []
-
-    def fake_apply(sql_text, connection_string, *, dialect):
-        captured.append((sql_text, connection_string, dialect))
-
-    monkeypatch.setattr(
-        module,
-        "_apply_sqlalchemy_direct_with_fallback",
-        fake_apply,
-    )
-
-    module.provision_role_accounts(
-        tmp_path,
-        tmp_path / "docker-compose.yml",
-        "mssql",
-        dry_run=False,
-        config={
-            "mssql": {"connection_string": "mssql+pyodbc://", "mode": "direct"},
-            "roles": {
-                "admin": {
-                    "account": {"username": "admin", "password": "StrongPw!23"}
-                },
-            },
-        },
-    )
-
-    assert captured
-    assert captured[0][2] == "mssql"
-    assert "CREATE LOGIN" in captured[0][0] or "CREATE ROLE" in captured[0][0]
-
-
-def test_wipe_mssql_uses_sqlalchemy_fallback_for_direct_mode(monkeypatch, tmp_path):
-    module = _load_enterprise_setup_module()
-    captured: list[tuple[str, str, str]] = []
-
-    def fake_apply(sql_text, connection_string, *, dialect):
-        captured.append((sql_text, connection_string, dialect))
-
-    monkeypatch.setattr(
-        module,
-        "_apply_sqlalchemy_direct_with_fallback",
-        fake_apply,
-    )
-
-    module.wipe_mssql(
-        tmp_path,
-        tmp_path / "docker-compose.yml",
-        dry_run=False,
-        config={"mssql": {"connection_string": "mssql+pyodbc://", "mode": "direct"}},
-    )
-
-    assert captured
-    assert captured[0][2] == "mssql"
-    assert "DROP TABLE" in captured[0][0]
-
-
-def test_validate_runtime_config_requires_connection_string_for_direct_mode(tmp_path):
-    module = _load_enterprise_setup_module()
-
-    with pytest.raises(ValueError, match="connection_string"):
-        module.validate_runtime_config(
-            "postgresql",
-            config={"postgresql": {"mode": "direct"}},
-            project_dir=tmp_path,
-        )
-
-
-def test_validate_runtime_config_requires_password_for_docker_mode(tmp_path, monkeypatch):
-    module = _load_enterprise_setup_module()
-    monkeypatch.delenv("PGPASSWORD", raising=False)
-    monkeypatch.delenv("POSTGRES_PASSWORD", raising=False)
-
-    with pytest.raises(ValueError, match="password"):
-        module.validate_runtime_config(
-            "postgresql",
-            config={"postgresql": {"mode": "docker"}},
-            project_dir=tmp_path,
-        )
-
-
-def test_mssql_sqlcmd_uses_dev_stdin_for_input(monkeypatch, tmp_path):
-    module = _load_enterprise_setup_module()
-    sql_path = tmp_path / "mssql_setup.sql"
-    sql_path.write_text("SELECT 1;", encoding="utf-8")
-    captured: list[list[str]] = []
-
-    def fake_run(cmd, **kwargs):
-        captured.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0, b"", b"")
-
-    monkeypatch.setattr(module, "_run", fake_run)
-
-    module.apply_sql_file(
-        "mssql",
-        sql_path,
-        tmp_path,
-        tmp_path / "docker-compose.yml",
-        dry_run=False,
-        config={"mssql": {"password": "TestPass123!", "mode": "docker"}},
-    )
-
-    assert captured
-    assert any("/dev/stdin" in part for part in captured[0])
-    assert "bash" not in captured[0]
-    assert "-lc" not in captured[0]
-    assert "bash" not in captured[0]
-    assert "-lc" not in captured[0]
-
-
-def test_provision_role_accounts_uses_mssql_stdin(monkeypatch, tmp_path):
-    module = _load_enterprise_setup_module()
-    captured: list[list[str]] = []
-
-    def fake_run(cmd, **kwargs):
-        captured.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0, b"", b"")
-
-    monkeypatch.setattr(module, "_run", fake_run)
-
-    module.provision_role_accounts(
-        tmp_path,
-        tmp_path / "docker-compose.yml",
-        "mssql",
-        dry_run=False,
-        config={
-            "mssql": {"password": "TestPass123!"},
-            "roles": {
-                "admin": {
-                    "account": {"username": "admin", "password": "StrongPw!23"}
-                },
-                "data_owner": {
-                    "account": {"username": "data_owner", "password": "DataOwnerPw!23"}
-                },
-            }
-        },
-    )
-
-    assert captured
-    assert any("/dev/stdin" in part for part in captured[0])
-
-
-def test_provision_role_accounts_uses_configured_roles_and_accounts(monkeypatch, tmp_path):
-    module = _load_enterprise_setup_module()
-    captured: list[dict] = []
-
-    def fake_apply_direct_sql(dialect, sql_text, config):
-        captured.append(
-            {"dialect": dialect, "sql_text": sql_text, "config": config})
-
-    monkeypatch.setattr(module, "_apply_direct_sql", fake_apply_direct_sql)
-
-    module.provision_role_accounts(
-        tmp_path,
-        tmp_path / "docker-compose.yml",
-        "mysql",
-        dry_run=False,
-        config={
-            "mysql": {"password": "TestPass123!"},
-            "roles": {
-                "admin": {
-                    "account": {"username": "finance_user", "password": "StrongPw!23"}
-                },
-                "data_owner": {
-                    "account": {"username": "data_owner", "password": "DataOwnerPw!23"}
-                },
-                "analyst": {},
-            }
-        },
-    )
-
-    assert captured
-    sql_payload = captured[0]["sql_text"]
-    assert "CREATE USER IF NOT EXISTS `finance_user`@'%' IDENTIFIED BY 'StrongPw!23';" in sql_payload

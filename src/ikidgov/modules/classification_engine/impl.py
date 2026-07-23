@@ -3,6 +3,9 @@ from ikidgov.core.module_base import Module
 from ikidgov.core.decision import Decision
 
 
+_KNOWN_DETECTORS = {"builtin", "iki_pii_masker"}
+
+
 class ClassificationEngine(Module):
     name = "classification_engine"
 
@@ -38,10 +41,15 @@ class ClassificationEngine(Module):
         return self.run(columns=columns, detector=detector)
 
     def _load_detector(self, detector_name: str) -> Detector:
+        if detector_name not in _KNOWN_DETECTORS:
+            raise ValueError(detector_name)
+
         from importlib.metadata import entry_points
 
-        detectors = entry_points(group="4p.detectors")
-        for entry_point in detectors:
-            if entry_point.name == detector_name:
-                return entry_point.load()()
+        for group in ("ikidgov.detectors",):
+            detectors = entry_points(group=group)
+            for entry_point in detectors:
+                if entry_point.name == detector_name:
+                    return entry_point.load()()
+        raise ValueError(detector_name)
         raise ValueError(detector_name)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,11 @@ def _normalize_role(role_name: str, role_config: Any, *, path: str = "roles") ->
         account["password_env"] = password_env
     password = account_config.get("password")
     if password is not None:
+        warnings.warn(
+            f"Role '{role_name}' uses account.password in config; prefer account.password_env to avoid plaintext secrets.",
+            UserWarning,
+            stacklevel=2,
+        )
         account["password"] = password
     elif password_env is not None:
         resolved_password = os.getenv(password_env)
@@ -103,7 +109,8 @@ def _normalize_config(data: Any) -> dict[str, Any]:
 
 def _candidate_paths() -> list[Path]:
     env_path = os.getenv("IKIGOV_CONFIG")
-    environment = os.getenv("IKIGOV_ENV") or os.getenv("APP_ENV")
+    environment = os.getenv("IKIGOV_ENV") or os.getenv(
+        "IKIDGOV_ENV") or os.getenv("APP_ENV")
     paths: list[Path] = []
 
     if env_path:

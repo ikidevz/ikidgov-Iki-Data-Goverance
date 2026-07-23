@@ -21,7 +21,9 @@ class Connector(ABC):
         if table is None:
             return
         # Only SQLConnector supports a table name; CSV/JSON ignore table.
-        if type(self).__name__ != "SQLConnector":
+        from ikidgov.connectors.sql_connector import SQLConnector
+
+        if not isinstance(self, SQLConnector):
             raise ValueError(
                 "Table argument is only supported by SQLConnector")
 
