@@ -381,6 +381,10 @@ class PolicyEngine(Module):
         quoted_role = self._quote(role, dialect)
         quoted_username = self._quote(username, dialect)
         if dialect == "mysql":
+            # MySQL role names and account names are distinct objects. Use the
+            # created account identity when the account was provisioned for the role.
+            if username.lower() == role.lower():
+                return ""
             return f"GRANT {quoted_role} TO {quoted_username}@{self._string_literal('localhost', dialect)};"
         if dialect in {"postgres", "postgresql"}:
             return f"GRANT {quoted_role} TO {quoted_username};"

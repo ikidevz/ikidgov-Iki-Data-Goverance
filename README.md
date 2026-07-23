@@ -42,7 +42,11 @@ cd ikidgov
 python -m pip install -e ".[dev]"
 ```
 
-### Docker-based example environment
+### Optional: Docker Compose stack
+
+Only needed if you want local Postgres/MySQL/MSSQL containers to experiment against — see
+[Docker Compose stack](#docker-compose-stack-optional-unrelated-to-the-enterprise-setup-script)
+below. It is unrelated to `examples/enterprise_setup.py`, which never touches Docker.
 
 ```bash
 cp .env.example .env   # adjust values if needed; see "Secrets & credentials" below
@@ -52,9 +56,10 @@ docker compose up -d --wait
 ### Requirements
 
 - Python 3.10 or newer
-- Docker (optional — only needed for the example multi-database stack)
 - PyYAML, SQLAlchemy, and the driver for whichever SQL backend(s) you target
   (`psycopg2-binary` for Postgres, `pymysql` for MySQL, `pyodbc` for MSSQL)
+- Docker is entirely optional — it's only used by the standalone Docker Compose stack
+  below, never by `examples/enterprise_setup.py`
 
 ## Quick start
 
@@ -147,26 +152,25 @@ ikidgov --env prod show-config
 - `.env` is for local, disposable Docker Compose credentials only. Copy `.env.example` to
   `.env` and keep the real `.env` out of version control (see `.gitignore`).
 
-## Docker and SQL backends
+## Docker Compose stack (optional, unrelated to the enterprise setup script)
 
-The repository includes a Docker Compose stack for SQLite, PostgreSQL, MySQL, and MSSQL
-examples, used by the scripts in [examples](examples).
+The repository also includes an optional Docker Compose stack that spins up local
+PostgreSQL, MySQL, and MSSQL containers for ad-hoc experimentation.
 
 ```bash
 cp .env.example .env
 docker compose up -d --wait
-python examples/enterprise_setup.py --dialect all
 ```
 
-If you only want a single backend, replace `all` with `sqlite`, `postgres`, `mysql`, or
-`mssql`. Add `--dry-run` to preview the commands without executing them, and `--teardown` to
-wipe the example data.
+This is entirely optional and is **not** used by `examples/enterprise_setup.py` — that
+script talks to databases exclusively through connection strings (see below), so it works
+identically against this local stack, a cloud-hosted database, or nothing but SQLite. Docker
+is never started, stopped, or otherwise managed by the script.
 
 > Note: the bundled `scan` CLI command currently discovers schema from **SQLite** files for
-> the `sql` source type (`--type sql --path <file> --table <name>`). The Docker Compose stack
-> spins up PostgreSQL/MySQL/MSSQL so `examples/enterprise_setup.py` can exercise the
-> multi-dialect **policy-compile / provisioning** path against all four backends — it is not
-> (yet) a multi-dialect `scan` target.
+> the `sql` source type (`--type sql --path <file> --table <name>`). It is not (yet) a
+> multi-dialect `scan` target — the multi-dialect path is `policy-compile` /
+> `enterprise_setup.py` provisioning, described below.
 
 ## Core modules
 
@@ -181,19 +185,116 @@ wipe the example data.
 Modules are registered as `4p.modules` entry points (see `pyproject.toml`) and detectors as
 `4p.detectors` entry points, so both are discoverable and swappable without changing core code.
 
-## Example workflow
+## Enterprise setup script (`examples/enterprise_setup.py`)
 
-The scripts in [examples](examples) demonstrate a full governance walkthrough: provisioning
-sample data, printing a role/account overview, running access-control CRUD and policy demos,
-and compiling+applying role grants across all four SQL dialects.
+[`examples/enterprise_setup.py`](examples/enterprise_setup.py) is a runnable walkthrough of
+the whole governance model: it provisions example tables, prints a role/account overview,
+runs the access-control CRUD and policy-check demos, and compiles + applies per-role database
+grants for SQLite, PostgreSQL, MySQL, and MSSQL.
+
+**It talks to databases through connection strings only.** There is no Docker dependency and
+no container management anywhere in the script — bring your own running database (a local
+install, a managed/cloud instance, or a container you started yourself), or just use the
+zero-setup SQLite default.
+
+### 1. Install the package
 
 ```bash
-python examples/enterprise_setup.py --dialect all --dry-run --skip-demo   # preview only
-python examples/enterprise_setup.py --dialect all                        # apply
-python examples/enterprise_setup.py --dialect all --teardown              # reset
+git clone <this repository>
+cd ikidgov
+python -m pip install -e ".[dev]"
 ```
 
-See [examples/GUIDE.md](examples/GUIDE.md) for the full walkthrough and config-file format.
+This pulls in SQLAlchemy plus the drivers for every supported backend (`psycopg2-binary`,
+`pymysql`, `pyodbc`). MSSQL also requires the [Microsoft ODBC Driver 18 for SQL
+Server](https://learn.microsoft.com/sql/connect/odbc/linux-mac/installing-the-microsoft-odbc-driver-for-sql-server)
+to be installed on your machine.
+
+### 2. Try it with zero setup (SQLite)
+
+```bash
+python examples/enterprise_setup.py --dry-run --skip-demo   # preview only, no writes
+python examples/enterprise_setup.py                         # apply — writes ./data/sqlite/registry.db
+python examples/enterprise_setup.py --teardown               # drop the example tables
+```
+
+### 3. Point it at a real PostgreSQL / MySQL / MSSQL server
+
+Provide a connection string using any one of these, in priority order:
+
+| Priority | Method                                                                   | Scope                       |
+| -------- | ------------------------------------------------------------------------ | --------------------------- |
+| 1        | `--connection-string "<url>"`                                            | single `--dialect` run only |
+| 2        | Env var: `IKIGOV_POSTGRES_URL` / `IKIGOV_MYSQL_URL` / `IKIGOV_MSSQL_URL` | that dialect                |
+| 3        | `<dialect>.connection_string` (or `.dsn`) in your governance YAML        | that dialect                |
+| 4        | _(SQLite only)_ a local file, default `./data/sqlite/registry.db`        | sqlite                      |
+
+```bash
+# via environment variable
+export IKIGOV_POSTGRES_URL="postgresql://user:pw@host:5432/db"
+python examples/enterprise_setup.py --dialect postgresql
+
+export IKIGOV_MYSQL_URL="mysql+pymysql://user:pw@host:3306/db"
+python examples/enterprise_setup.py --dialect mysql
+
+export IKIGOV_MSSQL_URL="mssql+pyodbc://user:pw@host:1433/db?driver=ODBC+Driver+18+for+SQL+Server"
+python examples/enterprise_setup.py --dialect mssql
+
+# or pass the connection string directly for a single dialect
+python examples/enterprise_setup.py --dialect postgresql \
+  --connection-string "postgresql://user:pw@host:5432/db"
+```
+
+If nothing is configured for a server-backed dialect, the script exits immediately with an
+actionable error — it never falls back to a guessed or default credential.
+
+Run every dialect in one pass (each still resolves its own connection independently):
+
+```bash
+python examples/enterprise_setup.py --dialect all --dry-run   # preview across all four
+python examples/enterprise_setup.py --dialect all             # apply to all four
+python examples/enterprise_setup.py --dialect all --teardown  # reset all four
+```
+
+### 4. Wire in per-role database accounts (optional)
+
+For every role in your governance config that has `account.password` (or
+`account.password_env`) set, the script compiles and applies `CREATE USER` / `CREATE ROLE` /
+`GRANT` statements scoped to that role's permissions. Roles without a configured password are
+skipped with a message — never given a shared or guessed password.
+
+```yaml
+roles:
+  analyst:
+    account:
+      username: analyst
+      password_env: ANALYST_DB_PASSWORD # preferred over a plaintext `password:` field
+    permissions:
+      - select
+    scope: policy_restricted
+```
+
+### 5. Use a specific governance profile
+
+```bash
+python examples/enterprise_setup.py --dialect postgresql --config config/governance.yaml
+IKIGOV_ENV=dev python examples/enterprise_setup.py --dry-run
+```
+
+### Useful flags
+
+| Flag                                            | Effect                                                       |
+| ----------------------------------------------- | ------------------------------------------------------------ |
+| `--dialect {sqlite,postgresql,mysql,mssql,all}` | Which backend(s) to target (default `sqlite`)                |
+| `--connection-string`                           | Explicit connection string (single dialect only)             |
+| `--sqlite-path`                                 | Override the SQLite file location                            |
+| `--config`                                      | Path to a specific governance YAML                           |
+| `--dry-run`                                     | Print what would run without executing anything              |
+| `--teardown`                                    | Drop the example tables/schemas before re-applying setup SQL |
+| `--skip-demo`                                   | Skip the access-control CRUD and policy-check demos          |
+
+See [examples/GUIDE.md](examples/GUIDE.md) for the full walkthrough, including the
+role/account reference and config-file format.
 
 ## Testing
 
@@ -219,8 +320,8 @@ src/ikidgov/
   modules/        access_control, classification_engine, metadata_registry, policy_engine
   policies/       policy definitions (YAML), e.g. restrict_pii.yaml
 config/           governance.yaml + per-environment overrides
-examples/         enterprise_setup.py and seed SQL for the Docker Compose stack
-init/             one-shot DB seed scripts used by docker-compose.yml
+examples/         enterprise_setup.py (connection-string based, no Docker) and seed SQL
+init/             one-shot DB seed scripts used by the optional docker-compose.yml stack
 tests/            pytest suite
 ```
 

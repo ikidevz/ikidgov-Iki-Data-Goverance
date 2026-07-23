@@ -14,8 +14,16 @@ script just opens a connection to it.
 Connection resolution, per dialect (first match wins):
   1. --connection-string (explicit override, applies to the single --dialect given)
   2. an environment variable: IKIGOV_POSTGRES_URL / IKIGOV_MYSQL_URL / IKIGOV_MSSQL_URL
-  3. <dialect>.connection_string (or .dsn) in your governance config
-  4. sqlite only: a local file, default ./data/sqlite/registry.db
+  3. <dialect>.connection_string (or .dsn) in your governance config, or
+     <dialect>.connection_string_env / .dsn_env resolved against the environment
+  4. the same two config keys above, resolved against a .env file
+     (default ./.env, override with --env-file)
+  5. sqlite only: a local file, default ./data/sqlite/registry.db
+
+This makes every dialect's connection string flexible by design: export it,
+put it in governance.yaml, put it in .env, or pass it on the command line --
+whichever fits your workflow. Local `localhost` URLs are automatically
+rewritten to 127.0.0.1 (some environments resolve `localhost` oddly).
 
 Examples:
   python examples/enterprise_setup.py
@@ -27,6 +35,8 @@ Examples:
   python examples/enterprise_setup.py --dialect all --dry-run
 
   python examples/enterprise_setup.py --dialect mysql --teardown
+
+  python examples/enterprise_setup.py --dialect postgresql --env-file .env.staging
 """
 from __future__ import annotations
 
@@ -131,8 +141,10 @@ class MissingConnectionError(SystemExit):
 # small printing / config helpers
 # --------------------------------------------------------------------------
 
-def _log_step(message: str) -> None:
+def _log_step(message: str, *, explain: str | None = None) -> None:
     print(f"\n=== {message} ===")
+    if explain:
+        print(f"    -> {explain}")
 
 
 def _print_section(title: str) -> None:
@@ -169,6 +181,26 @@ def _account_info(role_config: dict, role_name: str) -> tuple[str, str]:
 
 def _load_config(path: str | os.PathLike[str] | None = None) -> dict | None:
     return load_config(str(path) if path is not None else None)
+
+
+def _load_env_file(env_file: Path | None = None) -> dict[str, str]:
+    """Load simple KEY=VALUE pairs from a .env file. Missing file -> {}."""
+    path = env_file or (ROOT / ".env")
+    if not path.exists():
+        return {}
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def _mask_connection_string(connection_string: str) -> str:
+    """Redact user:password@ credentials before printing a connection string."""
+    return re.sub(r"//([^/@]+)@", "//***:***@", connection_string)
 
 
 def _ensure_sqlite_schema_migration(db_path: Path | str) -> None:
@@ -211,30 +243,47 @@ def _collect_role_account_overview(config: dict | None) -> list[dict]:
 # connection resolution -- connection strings only, no Docker involved
 # --------------------------------------------------------------------------
 
+def _normalize_local_url(connection_string: str) -> str:
+    """Rewrite `localhost` to 127.0.0.1 in local connection strings.
+
+    Some environments (notably inside certain containers/WSL setups) resolve
+    `localhost` inconsistently for TCP connections; 127.0.0.1 is unambiguous.
+    """
+    return (
+        connection_string
+        .replace("//localhost:", "//127.0.0.1:")
+        .replace("//localhost/", "//127.0.0.1/")
+    )
+
+
 def resolve_connection_string(
     dialect: str,
     *,
     cli_override: str | None,
     config: dict | None,
     sqlite_path: Path,
+    env_file: Path | None = None,
 ) -> str:
     """Resolve a SQLAlchemy connection string for `dialect`.
 
-    Priority: --connection-string > env var > governance config > (sqlite
-    only) a local file. Never falls back to a guessed/default credential --
-    if nothing is configured for a server-backed dialect, this raises with
-    an actionable message instead of silently trying something insecure.
+    Priority: --connection-string > env var > governance config
+    (connection_string/dsn, or connection_string_env/dsn_env resolved against
+    the environment) > the same config keys resolved against a .env file >
+    (sqlite only) a local file. Never falls back to a guessed/default
+    credential -- if nothing is configured for a server-backed dialect, this
+    raises with an actionable message instead of silently trying something
+    insecure.
     """
     if dialect == "sqlite":
         return cli_override or f"sqlite:///{sqlite_path}"
 
     if cli_override:
-        return cli_override
+        return _normalize_local_url(cli_override)
 
     env_var = DIALECT_ENV_VARS[dialect]
     from_env = os.getenv(env_var)
     if from_env:
-        return from_env
+        return _normalize_local_url(from_env)
 
     dialect_config = (config or {}).get(
         dialect, {}) if isinstance(config, dict) else {}
@@ -242,18 +291,31 @@ def resolve_connection_string(
         from_config = dialect_config.get(
             "connection_string") or dialect_config.get("dsn")
         if from_config:
-            return from_config
+            return _normalize_local_url(str(from_config))
         for env_key in ("connection_string_env", "dsn_env"):
             env_name = dialect_config.get(env_key)
             if isinstance(env_name, str) and env_name:
                 from_config_env = os.getenv(env_name)
                 if from_config_env:
-                    return from_config_env
+                    return _normalize_local_url(from_config_env)
+
+    # Last resort before giving up: a .env file (never committed, see .gitignore).
+    dotenv_values = _load_env_file(env_file)
+    from_dotenv = dotenv_values.get(env_var)
+    if from_dotenv:
+        return _normalize_local_url(from_dotenv)
+    if isinstance(dialect_config, dict):
+        for env_key in ("connection_string_env", "dsn_env"):
+            env_name = dialect_config.get(env_key)
+            if isinstance(env_name, str) and env_name:
+                from_dotenv_config = dotenv_values.get(env_name)
+                if from_dotenv_config:
+                    return _normalize_local_url(from_dotenv_config)
 
     raise MissingConnectionError(
-        f"No connection configured for '{dialect}'. Set {env_var}, pass "
-        f"--connection-string, or add a '{dialect}.connection_string' entry "
-        f"to your governance config."
+        f"No connection configured for '{dialect}'. Set {env_var} (directly or in "
+        f"{env_file or (ROOT / '.env')}), pass --connection-string, or add a "
+        f"'{dialect}.connection_string' entry to your governance config."
     )
 
 
@@ -302,11 +364,21 @@ def apply_sql(connection_string: str, sql_text: str, *, dialect: str, dry_run: b
 
     from sqlalchemy import create_engine, text
 
-    engine = create_engine(connection_string)
+    try:
+        engine = create_engine(connection_string)
+    except Exception as exc:
+        raise SystemExit(
+            f"Failed to execute SQL for '{dialect}': could not create a SQLAlchemy engine. "
+            f"Check the connection string, install the matching driver, and ensure the target is reachable."
+        ) from exc
+
     try:
         with engine.begin() as connection:
             for statement in statements:
                 connection.execute(text(statement))
+    except Exception as exc:
+        raise SystemExit(
+            f"Failed to execute SQL for '{dialect}': {exc}") from exc
     finally:
         engine.dispose()
     return len(statements)
@@ -316,7 +388,11 @@ def apply_example_data(dialect: str, connection_string: str, *, dry_run: bool) -
     sql_path = SETUP_SQL_FILES[dialect]
     if not sql_path.exists():
         return
-    _log_step(f"Applying {sql_path.name} to {dialect}")
+    _log_step(
+        f"Applying {sql_path.name} to {dialect}",
+        explain="Creates the example tables (employees, customers, etc.) and seeds a "
+        "few rows tagged with sensitivity_level, so later steps have real data to govern.",
+    )
     if dialect == "sqlite" and not dry_run:
         db_path = connection_string.removeprefix("sqlite:///")
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -326,7 +402,10 @@ def apply_example_data(dialect: str, connection_string: str, *, dry_run: bool) -
 
 
 def teardown_dialect(dialect: str, connection_string: str, *, dry_run: bool) -> None:
-    _log_step(f"Tearing down example data for {dialect}")
+    _log_step(
+        f"Tearing down example data for {dialect}",
+        explain="Drops the example tables/schemas so the next apply starts from a clean slate.",
+    )
     apply_sql(connection_string,
               TEARDOWN_SQL[dialect], dialect=dialect, dry_run=dry_run)
 
@@ -377,7 +456,12 @@ def provision_role_accounts(
         return
 
     table_name = TABLE_FOR_POLICY[dialect]
-    _log_step(f"Provisioning role accounts for {dialect}")
+    _log_step(
+        f"Provisioning role accounts for {dialect}",
+        explain="Compiles each role's permissions (from governance.yaml) into real "
+        "CREATE USER / CREATE ROLE / GRANT statements, then applies them. This is the "
+        "'least privilege' step: each role only gets the actions it's configured for.",
+    )
     effective_config = _roles_with_configured_passwords(config)
 
     try:
@@ -404,7 +488,10 @@ def provision_role_accounts(
 
 
 def print_access_summary(dialect: str, config: dict | None) -> None:
-    _log_step(f"Role permission summary for {dialect}")
+    _log_step(
+        f"Role permission summary for {dialect}",
+        explain="A recap of who can do what, so you can eyeball the effective access model at a glance.",
+    )
     items = _role_config_items(config)
     if not items:
         print("(no role permissions available in the current governance config)")
@@ -449,6 +536,9 @@ def print_role_account_overview(config: dict | None) -> None:
 
 def _demo_access_control_crud(demo_db: Path) -> None:
     _print_section("Access-control CRUD demo")
+    print("Roles, permissions, and access entries are just governed records themselves --")
+    print("this walks through creating, reading, updating, and deleting them via the same")
+    print("access_control module the CLI and other integrations use.")
     if demo_db.exists():
         demo_db.unlink()
 
@@ -498,6 +588,8 @@ def _demo_access_control_crud(demo_db: Path) -> None:
 
 def _demo_policy_permissions() -> None:
     _print_section("Dynamic policy permission demo")
+    print("The policy engine is fail-closed: an action is only ALLOWED if the role's")
+    print("permission list explicitly includes it. Nothing is granted by default.")
     actions = ["select", "insert", "update",
                "delete", "create", "alter", "drop"]
     for action in actions:
@@ -508,6 +600,8 @@ def _demo_policy_permissions() -> None:
 
 def _demo_enterprise_role_validation(config: dict | None) -> None:
     _print_section("Enterprise role validation demo")
+    print("Same role, same action, checked against every dialect's target table --")
+    print("showing that the decision is driven by governance config, not by database engine.")
     items = _role_config_items(config)
     demo_roles = [(name, _as_list(cfg.get("permissions", []))) for name, cfg in items] or [
         ("data_owner", ["select", "insert", "update", "delete"]),
@@ -535,6 +629,8 @@ def _demo_enterprise_role_validation(config: dict | None) -> None:
 
 def _demo_account_role_access(config: dict | None) -> None:
     _print_section("Role access implementation demo")
+    print("Ties it together: each configured role's actual DB account, next to what")
+    print("actions the policy engine says that role is allowed to perform.")
     for role_name, role_config in _role_config_items(config):
         username, password = _account_info(role_config, role_name)
         permissions = _as_list(role_config.get("permissions", []))
@@ -569,7 +665,8 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
             "  python examples/enterprise_setup.py --dry-run\n"
             "  IKIGOV_POSTGRES_URL=postgresql://user:pw@host/db python examples/enterprise_setup.py --dialect postgresql\n"
             "  python examples/enterprise_setup.py --dialect all --dry-run\n"
-            "  python examples/enterprise_setup.py --teardown --dialect mysql"
+            "  python examples/enterprise_setup.py --teardown --dialect mysql\n"
+            "  python examples/enterprise_setup.py --dialect postgresql --env-file .env.staging"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -584,6 +681,10 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--config", type=Path,
         help="Optional governance YAML config. If omitted, uses the project config loader and IKIGOV_ENV.",
+    )
+    parser.add_argument(
+        "--env-file", type=Path, default=None,
+        help="Path to a .env file used as a final fallback for connection strings (default: ./.env).",
     )
     parser.add_argument("--dry-run", action="store_true",
                         help="Show what would run without executing anything")
@@ -603,6 +704,12 @@ def _run_dialect(dialect: str, args: argparse.Namespace, config: dict | None) ->
         cli_override=args.connection_string,
         config=config,
         sqlite_path=args.sqlite_path,
+        env_file=args.env_file,
+    )
+    _log_step(
+        f"Resolved connection for {dialect}",
+        explain=f"Using {_mask_connection_string(connection_string)} "
+        f"(checked --connection-string, then env var, then governance config, then .env file, in that order).",
     )
 
     if args.teardown:
@@ -641,6 +748,16 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     for dialect in dialects:
         _run_dialect(dialect, args, config)
+
+    _print_section("What just happened")
+    print("1. Example tables were created and seeded with sensitivity-tagged data.")
+    print(
+        "2. Each governance role got a real, scoped database account (where a password")
+    print("   was configured) via SQL compiled straight from governance.yaml.")
+    print("3. The policy engine's ALLOWED/DENIED checks show that access is driven purely")
+    print("   by config, not hardcoded per database or table.")
+    print("Next: edit config/governance.yaml (roles/permissions) and re-run to see the")
+    print("provisioning SQL and policy decisions change accordingly.")
 
     _log_step("Enterprise example setup complete")
     return 0

@@ -161,6 +161,24 @@ def test_resolve_connection_string_falls_back_to_env(monkeypatch):
     assert result == "postgresql://from-env"
 
 
+def test_resolve_connection_string_reads_dotenv_file(tmp_path, monkeypatch):
+    module = _load_enterprise_setup_module()
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "IKIGOV_POSTGRES_URL=postgresql://from-dotenv\n", encoding="utf-8")
+    monkeypatch.delenv("IKIGOV_POSTGRES_URL", raising=False)
+
+    result = module.resolve_connection_string(
+        "postgresql",
+        cli_override=None,
+        config=None,
+        sqlite_path=Path("/tmp/registry.db"),
+        env_file=env_path,
+    )
+
+    assert result == "postgresql://from-dotenv"
+
+
 def test_resolve_connection_string_falls_back_to_config(monkeypatch):
     module = _load_enterprise_setup_module()
     monkeypatch.delenv("IKIGOV_MYSQL_URL", raising=False)
@@ -189,9 +207,11 @@ def test_resolve_connection_string_sqlite_defaults_to_local_file():
     assert result == f"sqlite:///{sqlite_path}"
 
 
-def test_resolve_connection_string_raises_actionable_error_when_unconfigured(monkeypatch):
+def test_resolve_connection_string_raises_actionable_error_when_unconfigured(monkeypatch, tmp_path):
     module = _load_enterprise_setup_module()
     monkeypatch.delenv("IKIGOV_MSSQL_URL", raising=False)
+    monkeypatch.setattr(module, "_load_env_file", lambda env_file=None: {})
+    monkeypatch.chdir(tmp_path)
 
     with pytest.raises(SystemExit, match="IKIGOV_MSSQL_URL"):
         module.resolve_connection_string(
@@ -213,6 +233,24 @@ def test_apply_sql_dry_run_does_not_touch_sqlalchemy():
     )
 
     assert count == 2
+
+
+def test_apply_sql_raises_actionable_error_on_connection_failure(monkeypatch):
+    module = _load_enterprise_setup_module()
+    import sqlalchemy
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("driver missing")
+
+    monkeypatch.setattr(sqlalchemy, "create_engine", boom)
+
+    with pytest.raises(SystemExit, match="Failed to execute SQL"):
+        module.apply_sql(
+            "postgresql://example",
+            "SELECT 1;",
+            dialect="postgresql",
+            dry_run=False,
+        )
 
 
 def test_apply_sql_executes_statements_against_sqlite(tmp_path):
