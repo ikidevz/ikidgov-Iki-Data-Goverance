@@ -71,7 +71,7 @@ def test_policy_compile_generates_sql_with_explicit_password(tmp_path):
         text=True,
         capture_output=True,
         env={**dict(__import__("os").environ), "PYTHONPATH": str(ROOT /
-                                                                 "src"), "IKIGOV_CONFIG": str(config_path)},
+                                                                 "src"), "IKIDGOV_CONFIG": str(config_path)},
     )
     assert result.returncode == 0, result.stderr
     assert "CREATE USER IF NOT EXISTS `admin`@'localhost' IDENTIFIED BY '********';" in result.stdout
@@ -97,7 +97,7 @@ def test_policy_compile_reveal_secrets_flag_prints_real_password(tmp_path):
         text=True,
         capture_output=True,
         env={**dict(__import__("os").environ), "PYTHONPATH": str(ROOT /
-                                                                 "src"), "IKIGOV_CONFIG": str(config_path)},
+                                                                 "src"), "IKIDGOV_CONFIG": str(config_path)},
     )
     assert result.returncode == 0, result.stderr
     assert "StrongPw!23" in result.stdout

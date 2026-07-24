@@ -100,7 +100,7 @@ def test_policy_engine_high_sensitivity_explicit_permissions_denied(monkeypatch)
     engine = PolicyEngine()
 
     monkeypatch.setattr(
-        "ikigov.modules.metadata_registry.interface.get_dataset",
+        "ikidgov.modules.metadata_registry.interface.get_dataset",
         lambda dataset_id: {
             "columns": [
                 {"name": "ssn", "sensitivity_level": "high"}

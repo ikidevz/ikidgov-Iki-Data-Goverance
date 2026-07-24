@@ -35,6 +35,6 @@ class ScanCommand(BaseCommand):
             config_path = getattr(args, "config", None)
             config = load_config(config_path)
             backend = getattr(args, "backend", None) or os.getenv(
-                "IKIGOV_SQL_BACKEND") or "sqlite"
+                "IKIDGOV_SQL_BACKEND") or "sqlite"
             return SQLConnector(args.path, args.table, backend=backend, config=config)
         raise ValueError(args.type)

@@ -9,7 +9,7 @@ class ShowConfigCommand(BaseCommand):
     name = "show-config"
 
     def _handle(self, args: argparse.Namespace) -> dict:
-        environment = os.getenv("IKIGOV_ENV") or os.getenv(
+        environment = os.getenv("IKIDGOV_ENV") or os.getenv(
             "APP_ENV") or "default"
         config = load_config()
         return {

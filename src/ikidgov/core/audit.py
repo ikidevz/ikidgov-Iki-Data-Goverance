@@ -16,7 +16,7 @@ logger = logging.getLogger("ikidgov.audit")
 
 
 def _audit_log_path() -> Path:
-    configured = os.getenv("IKIGOV_AUDIT_LOG")
+    configured = os.getenv("IKIDGOV_AUDIT_LOG")
     if configured:
         return Path(configured).expanduser()
     return Path.cwd() / "audit.log"

@@ -24,7 +24,7 @@ def test_scan_cli_accepts_backend_argument_for_sqlite():
 
         env = os.environ.copy()
         env["PYTHONPATH"] = str(ROOT / "src")
-        env["IKIGOV_DB_PATH"] = str(db_path)
+        env["IKIDGOV_DB_PATH"] = str(db_path)
 
         scan = subprocess.run(
             [sys.executable, "-m", "ikidgov.cli.main", "scan", "--type", "sql",
@@ -55,7 +55,7 @@ def test_sqlite_scan_classify_and_policy_check_work_end_to_end():
 
         env = os.environ.copy()
         env["PYTHONPATH"] = str(ROOT / "src")
-        env["IKIGOV_DB_PATH"] = str(db_path)
+        env["IKIDGOV_DB_PATH"] = str(db_path)
 
         scan = subprocess.run(
             [sys.executable, "-m", "ikidgov.cli.main", "scan", "--type", "sql",
@@ -112,7 +112,7 @@ sqlite:
 """.format(db_path).strip() + "\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("IKIGOV_CONFIG", str(config_path))
+    monkeypatch.setenv("IKIDGOV_CONFIG", str(config_path))
 
     config = load_config(str(config_path))
     connector = SQLConnector(str(db_path), "customers",

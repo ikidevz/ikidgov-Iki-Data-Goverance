@@ -25,7 +25,7 @@ roles:
         + "\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("IKIGOV_CONFIG", str(config_path))
+    monkeypatch.setenv("IKIDGOV_CONFIG", str(config_path))
 
     import ikidgov.modules.access_control.roles as roles_module
 
@@ -50,7 +50,7 @@ connectors:
         + "\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("IKIGOV_CONFIG", str(config_path))
+    monkeypatch.setenv("IKIDGOV_CONFIG", str(config_path))
 
     import ikidgov.config_loader as config_loader
     import ikidgov.connectors.csv_connector as csv_connector_module
@@ -79,7 +79,7 @@ roles:
         + "\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("IKIGOV_CONFIG", str(config_path))
+    monkeypatch.setenv("IKIDGOV_CONFIG", str(config_path))
 
     import ikidgov.config_loader as config_loader
     import ikidgov.modules.policy_engine.impl as policy_impl
@@ -127,7 +127,7 @@ roles:
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("IKIGOV_ENV", "dev")
+    monkeypatch.setenv("IKIDGOV_ENV", "dev")
 
     import ikidgov.config_loader as config_loader
 
@@ -150,7 +150,7 @@ roles:
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("IKIGOV_ENV", "dev")
+    monkeypatch.setenv("IKIDGOV_ENV", "dev")
 
     result = subprocess.run(
         [sys.executable, "-m", "ikidgov.cli.main",
@@ -190,7 +190,7 @@ sqlite:
         + "\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("IKIGOV_CONFIG", str(config_path))
+    monkeypatch.setenv("IKIDGOV_CONFIG", str(config_path))
 
     import ikidgov.config_loader as config_loader
 
@@ -214,7 +214,7 @@ roles:
         + "\n",
         encoding="utf-8",
     )
-    monkeypatch.setenv("IKIGOV_CONFIG", str(config_path))
+    monkeypatch.setenv("IKIDGOV_CONFIG", str(config_path))
 
     import ikidgov.config_loader as config_loader
 

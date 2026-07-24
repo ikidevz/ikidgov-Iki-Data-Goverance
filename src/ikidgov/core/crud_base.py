@@ -14,10 +14,10 @@ class SqliteCrudBase:
 
     def __init__(self, db_path: str | None = None, entities: dict[str, dict[str, str]] | None = None, backend: str = "sqlite"):
         self.db_path = str(db_path or os.getenv(
-            "IKIGOV_ACCESS_CONTROL_DB_PATH") or os.getenv("IKIGOV_DB_PATH") or "crud.db")
-        if db_path is None and os.getenv("IKIGOV_DB_PATH") and not os.getenv("IKIGOV_ACCESS_CONTROL_DB_PATH"):
+            "IKIDGOV_ACCESS_CONTROL_DB_PATH") or os.getenv("IKIDGOV_DB_PATH") or "crud.db")
+        if db_path is None and os.getenv("IKIDGOV_DB_PATH") and not os.getenv("IKIDGOV_ACCESS_CONTROL_DB_PATH"):
             warnings.warn(
-                "IKIGOV_DB_PATH is deprecated for access control storage. Use IKIGOV_ACCESS_CONTROL_DB_PATH instead.",
+                "IKIDGOV_DB_PATH is deprecated for access control storage. Use IKIDGOV_ACCESS_CONTROL_DB_PATH instead.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -49,25 +49,25 @@ class SqliteCrudBase:
         if raw.startswith(("postgresql://", "postgres://", "mysql://", "mysql+pymysql://", "mssql://", "mssql+pyodbc://")):
             return raw
         if self.backend in {"postgresql", "postgres"}:
-            env_value = os.getenv("IKIGOV_POSTGRES_URL")
+            env_value = os.getenv("IKIDGOV_POSTGRES_URL")
             if env_value:
                 return env_value
             raise ValueError(
-                "No PostgreSQL connection URL configured. Set IKIGOV_POSTGRES_URL.")
+                "No PostgreSQL connection URL configured. Set IKIDGOV_POSTGRES_URL.")
         if self.backend == "mysql":
-            env_value = os.getenv("IKIGOV_MYSQL_URL")
+            env_value = os.getenv("IKIDGOV_MYSQL_URL")
             if env_value:
                 return env_value
             raise ValueError(
-                "No MySQL connection URL configured. Set IKIGOV_MYSQL_URL.")
+                "No MySQL connection URL configured. Set IKIDGOV_MYSQL_URL.")
         if self.backend in {"mssql", "sqlserver"}:
-            env_value = os.getenv("IKIGOV_MSSQL_URL")
+            env_value = os.getenv("IKIDGOV_MSSQL_URL")
             if env_value:
                 return env_value
             raise ValueError(
-                "No MSSQL connection URL configured. Set IKIGOV_MSSQL_URL.")
+                "No MSSQL connection URL configured. Set IKIDGOV_MSSQL_URL.")
         raise ValueError(
-            f"No connection URL configured for backend {self.backend!r}. Set the appropriate IKIGOV_*_URL environment variable.")
+            f"No connection URL configured for backend {self.backend!r}. Set the appropriate IKIDGOV_*_URL environment variable.")
 
     def _validate_identifier(self, identifier: str, kind: str = "identifier") -> None:
         from ikidgov.core.validation import validate_identifier

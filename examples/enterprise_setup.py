@@ -13,7 +13,7 @@ script just opens a connection to it.
 
 Connection resolution, per dialect (first match wins):
   1. --connection-string (explicit override, applies to the single --dialect given)
-  2. an environment variable: IKIGOV_POSTGRES_URL / IKIGOV_MYSQL_URL / IKIGOV_MSSQL_URL
+  2. an environment variable: IKIDGOV_POSTGRES_URL / IKIDGOV_MYSQL_URL / IKIDGOV_MSSQL_URL
   3. <dialect>.connection_string (or .dsn) in your governance config, or
      <dialect>.connection_string_env / .dsn_env resolved against the environment
   4. the same two config keys above, resolved against a .env file
@@ -29,7 +29,7 @@ Examples:
   python examples/enterprise_setup.py
       # sqlite, zero setup, creates ./data/sqlite/registry.db
 
-  IKIGOV_POSTGRES_URL=postgresql://user:pw@host:5432/db \\
+  IKIDGOV_POSTGRES_URL=postgresql://user:pw@host:5432/db \\
       python examples/enterprise_setup.py --dialect postgresql
 
   python examples/enterprise_setup.py --dialect all --dry-run
@@ -37,13 +37,24 @@ Examples:
   python examples/enterprise_setup.py --dialect mysql --teardown
 
   python examples/enterprise_setup.py --dialect postgresql --env-file .env.staging
+
+--------------------------------------------------------------------------
+How this file is organized (read top to bottom, or jump to a section):
+  1. Setup & constants        -- paths, the shared facade, per-dialect tables
+  2. Small helpers            -- printing + reading role/account config
+  3. Connection resolution    -- turn CLI/env/config/.env into a connection string
+  4. SQL execution            -- run example-data / teardown SQL through the facade
+  5. Role account provisioning-- compile + apply per-role CREATE USER/GRANT SQL
+  6. Reporting                -- human-readable role/permission summaries
+  7. Demos                    -- access-control CRUD, policy-check walkthroughs
+  8. CLI                      -- argument parsing and the main() entry point
+--------------------------------------------------------------------------
 """
 from __future__ import annotations
+from ikidgov import DataGovernance, load_config
 
 import argparse
 import os
-import re
-import sqlite3
 import sys
 from pathlib import Path
 from typing import Iterable
@@ -53,36 +64,29 @@ SRC_DIR = ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from ikidgov.config_loader import load_config  # noqa: E402
-from ikidgov.modules.access_control.interface import (  # noqa: E402
-    create_access,
-    create_permission,
-    create_role,
-    delete_access,
-    delete_permission,
-    delete_role,
-    get_access,
-    get_permission,
-    get_role,
-    list_accesses,
-    list_permissions,
-    list_roles,
-    update_access,
-    update_permission,
-    update_role,
-)
-from ikidgov.modules.policy_engine.interface import check as check_policy  # noqa: E402
-from ikidgov.modules.policy_engine.interface import compile as compile_policy_sql  # noqa: E402
+
+# ==========================================================================
+# 1. Setup & constants
+# ==========================================================================
+
+# A single facade instance backs the whole script. Every subsystem this
+# script touches -- access-control CRUD, policy checks/compilation,
+# connection-string resolution, SQL execution -- is reached through this one
+# object instead of importing five separate `ikidgov.modules.*` interfaces.
+_facade = DataGovernance(root=ROOT)
 
 EXAMPLES_DIR = ROOT / "examples"
 ALL_DIALECTS = ["sqlite", "postgresql", "mysql", "mssql"]
 
+# One environment variable per server-backed dialect (SQLite needs none: it
+# resolves straight to a local file).
 DIALECT_ENV_VARS = {
-    "postgresql": "IKIGOV_POSTGRES_URL",
-    "mysql": "IKIGOV_MYSQL_URL",
-    "mssql": "IKIGOV_MSSQL_URL",
+    "postgresql": "IKIDGOV_POSTGRES_URL",
+    "mysql": "IKIDGOV_MYSQL_URL",
+    "mssql": "IKIDGOV_MSSQL_URL",
 }
 
+# The seed SQL that creates + populates the example tables per dialect.
 SETUP_SQL_FILES = {
     "sqlite": EXAMPLES_DIR / "sqlite_setup.sql",
     "postgresql": EXAMPLES_DIR / "postgresql_setup.sql",
@@ -90,6 +94,7 @@ SETUP_SQL_FILES = {
     "mssql": EXAMPLES_DIR / "mssql_setup.sql",
 }
 
+# The inverse of SETUP_SQL_FILES: drop everything the setup SQL created.
 TEARDOWN_SQL = {
     "sqlite": """
         DROP TABLE IF EXISTS employees;
@@ -125,6 +130,8 @@ TEARDOWN_SQL = {
     """,
 }
 
+# Which table the policy-engine demos / grant compilation should target,
+# per dialect (Postgres and MSSQL use a schema-qualified name).
 TABLE_FOR_POLICY = {
     "sqlite": "employees",
     "mysql": "employees",
@@ -132,26 +139,44 @@ TABLE_FOR_POLICY = {
     "mssql": "hr.employees",
 }
 
+# Actions exercised by the policy-check demos, roughly ordered from
+# "read-only" to "most destructive".
+DEMO_ACTIONS = ["select", "insert", "update",
+                "delete", "create", "alter", "drop"]
+
 
 class MissingConnectionError(SystemExit):
     """Raised when a dialect has no resolvable connection string."""
 
 
-# --------------------------------------------------------------------------
-# small printing / config helpers
-# --------------------------------------------------------------------------
+# ==========================================================================
+# 2. Small helpers -- printing, and reading roles/accounts out of config
+# ==========================================================================
 
 def _log_step(message: str, *, explain: str | None = None) -> None:
+    """Print a `=== step ===` banner, optionally with a one-line explanation."""
     print(f"\n=== {message} ===")
     if explain:
         print(f"    -> {explain}")
 
 
 def _print_section(title: str) -> None:
+    """Print a heavier banner used to separate the script's major demos."""
     print(f"\n{'=' * 72}\n{title}\n{'=' * 72}")
 
 
+def _decision_label(decision) -> str:
+    """Render a policy-engine Decision as the word ALLOWED or DENIED."""
+    return "ALLOWED" if decision.allowed else "DENIED"
+
+
 def _as_list(value: object) -> list[str]:
+    """Coerce a YAML value that should be a list of strings into one.
+
+    Governance YAML sometimes has a single string where a list is expected
+    (e.g. `permissions: select` instead of `permissions: [select]`); this
+    normalizes both shapes and treats anything else as "no values".
+    """
     if isinstance(value, str):
         return [value]
     if isinstance(value, list):
@@ -160,6 +185,11 @@ def _as_list(value: object) -> list[str]:
 
 
 def _role_config_items(config: dict | None) -> list[tuple[str, dict]]:
+    """Return `(role_name, role_config)` pairs from a governance config, sorted by name.
+
+    Filters out anything under `roles:` that isn't a proper mapping, so
+    callers never have to defend against malformed YAML themselves.
+    """
     roles_config = (config or {}).get(
         "roles", {}) if isinstance(config, dict) else {}
     if not isinstance(roles_config, dict):
@@ -171,6 +201,7 @@ def _role_config_items(config: dict | None) -> list[tuple[str, dict]]:
 
 
 def _account_info(role_config: dict, role_name: str) -> tuple[str, str]:
+    """Return `(username, password)` for a role, defaulting username to the role name."""
     account_config = role_config.get("account", {})
     if not isinstance(account_config, dict):
         account_config = {}
@@ -180,6 +211,7 @@ def _account_info(role_config: dict, role_name: str) -> tuple[str, str]:
 
 
 def _load_config(path: str | os.PathLike[str] | None = None) -> dict | None:
+    """Thin wrapper around `ikidgov.load_config` so tests can monkeypatch it by name."""
     return load_config(str(path) if path is not None else None)
 
 
@@ -200,7 +232,7 @@ def _load_env_file(env_file: Path | None = None) -> dict[str, str]:
 
 def _mask_connection_string(connection_string: str) -> str:
     """Redact user:password@ credentials before printing a connection string."""
-    return re.sub(r"//([^/@]+)@", "//***:***@", connection_string)
+    return _facade.provisioning.mask_connection_string(connection_string)
 
 
 def _ensure_sqlite_schema_migration(db_path: Path | str) -> None:
@@ -209,21 +241,11 @@ def _ensure_sqlite_schema_migration(db_path: Path | str) -> None:
     Safe to call against a database that doesn't exist yet, or one already
     on the current schema.
     """
-    path = Path(db_path)
-    if not path.exists():
-        return
-    connection = sqlite3.connect(path)
-    try:
-        columns = [row[1]
-                   for row in connection.execute("PRAGMA table_info(customers)")]
-        if columns and "region" not in columns:
-            connection.execute("ALTER TABLE customers ADD COLUMN region TEXT")
-            connection.commit()
-    finally:
-        connection.close()
+    _facade.provisioning.ensure_sqlite_column(db_path, "customers", "region")
 
 
 def _collect_role_account_overview(config: dict | None) -> list[dict]:
+    """Flatten every configured role into a printable dict of role/account facts."""
     overview: list[dict] = []
     for role_name, role_config in _role_config_items(config):
         username, password = _account_info(role_config, role_name)
@@ -239,21 +261,37 @@ def _collect_role_account_overview(config: dict | None) -> list[dict]:
     return overview
 
 
-# --------------------------------------------------------------------------
-# connection resolution -- connection strings only, no Docker involved
-# --------------------------------------------------------------------------
+# ==========================================================================
+# 3. Connection resolution -- connection strings only, no Docker involved
+# ==========================================================================
 
 def _normalize_local_url(connection_string: str) -> str:
-    """Rewrite `localhost` to 127.0.0.1 in local connection strings.
+    """Rewrite `localhost` to 127.0.0.1 in local connection strings."""
+    return _facade.provisioning.normalize_local_url(connection_string)
 
-    Some environments (notably inside certain containers/WSL setups) resolve
-    `localhost` inconsistently for TCP connections; 127.0.0.1 is unambiguous.
-    """
-    return (
-        connection_string
-        .replace("//localhost:", "//127.0.0.1:")
-        .replace("//localhost/", "//127.0.0.1/")
-    )
+
+def _dialect_config_section(dialect: str, config: dict | None) -> dict:
+    """Return the `<dialect>: {...}` block of a governance config, or {}."""
+    section = (config or {}).get(
+        dialect, {}) if isinstance(config, dict) else {}
+    return section if isinstance(section, dict) else {}
+
+
+def _connection_from_governance_config(dialect_config: dict) -> str | None:
+    """Direct `connection_string` / `dsn` keys in the governance config, if set."""
+    value = dialect_config.get(
+        "connection_string") or dialect_config.get("dsn")
+    return str(value) if value else None
+
+
+def _connection_from_named_env_var(dialect_config: dict, values: dict[str, str] | None = None) -> str | None:
+    """Resolve `connection_string_env` / `dsn_env` against `values` (default: os.environ)."""
+    lookup = os.environ if values is None else values
+    for env_key in ("connection_string_env", "dsn_env"):
+        env_name = dialect_config.get(env_key)
+        if isinstance(env_name, str) and env_name and lookup.get(env_name):
+            return lookup[env_name]
+    return None
 
 
 def resolve_connection_string(
@@ -264,16 +302,7 @@ def resolve_connection_string(
     sqlite_path: Path,
     env_file: Path | None = None,
 ) -> str:
-    """Resolve a SQLAlchemy connection string for `dialect`.
-
-    Priority: --connection-string > env var > governance config
-    (connection_string/dsn, or connection_string_env/dsn_env resolved against
-    the environment) > the same config keys resolved against a .env file >
-    (sqlite only) a local file. Never falls back to a guessed/default
-    credential -- if nothing is configured for a server-backed dialect, this
-    raises with an actionable message instead of silently trying something
-    insecure.
-    """
+    """Resolve a connection string while preserving the example script's CLI contract."""
     if dialect == "sqlite":
         return cli_override or f"sqlite:///{sqlite_path}"
 
@@ -281,36 +310,29 @@ def resolve_connection_string(
         return _normalize_local_url(cli_override)
 
     env_var = DIALECT_ENV_VARS[dialect]
+    dialect_config = _dialect_config_section(dialect, config)
+
     from_env = os.getenv(env_var)
     if from_env:
         return _normalize_local_url(from_env)
 
-    dialect_config = (config or {}).get(
-        dialect, {}) if isinstance(config, dict) else {}
-    if isinstance(dialect_config, dict):
-        from_config = dialect_config.get(
-            "connection_string") or dialect_config.get("dsn")
-        if from_config:
-            return _normalize_local_url(str(from_config))
-        for env_key in ("connection_string_env", "dsn_env"):
-            env_name = dialect_config.get(env_key)
-            if isinstance(env_name, str) and env_name:
-                from_config_env = os.getenv(env_name)
-                if from_config_env:
-                    return _normalize_local_url(from_config_env)
+    from_config = _connection_from_governance_config(dialect_config)
+    if from_config:
+        return _normalize_local_url(from_config)
 
-    # Last resort before giving up: a .env file (never committed, see .gitignore).
+    from_config_env = _connection_from_named_env_var(dialect_config)
+    if from_config_env:
+        return _normalize_local_url(from_config_env)
+
     dotenv_values = _load_env_file(env_file)
     from_dotenv = dotenv_values.get(env_var)
     if from_dotenv:
         return _normalize_local_url(from_dotenv)
-    if isinstance(dialect_config, dict):
-        for env_key in ("connection_string_env", "dsn_env"):
-            env_name = dialect_config.get(env_key)
-            if isinstance(env_name, str) and env_name:
-                from_dotenv_config = dotenv_values.get(env_name)
-                if from_dotenv_config:
-                    return _normalize_local_url(from_dotenv_config)
+
+    from_dotenv_config = _connection_from_named_env_var(
+        dialect_config, dotenv_values)
+    if from_dotenv_config:
+        return _normalize_local_url(from_dotenv_config)
 
     raise MissingConnectionError(
         f"No connection configured for '{dialect}'. Set {env_var} (directly or in "
@@ -319,79 +341,38 @@ def resolve_connection_string(
     )
 
 
-# --------------------------------------------------------------------------
-# SQL execution -- direct SQLAlchemy only
-# --------------------------------------------------------------------------
+# ==========================================================================
+# 4. SQL execution -- direct SQLAlchemy only, always through the facade
+# ==========================================================================
 
 def _split_statements(sql_text: str, *, dialect: str) -> list[str]:
-    """Split a SQL script into individually-executable statements.
-
-    MSSQL example scripts use 'GO' batch separators; each batch may contain
-    several ';'-terminated statements that must be sent together. Every
-    other dialect is split on top-level ';' outside single-quoted strings.
-    """
-    if dialect == "mssql":
-        batches = re.split(r"(?im)^\s*GO\s*$", sql_text)
-        return [batch.strip() for batch in batches if batch.strip()]
-
-    statements: list[str] = []
-    buffer: list[str] = []
-    in_quote = False
-    for ch in sql_text:
-        buffer.append(ch)
-        if ch == "'":
-            in_quote = not in_quote
-        elif ch == ";" and not in_quote:
-            statement = "".join(buffer).strip()
-            if statement.strip(";").strip():
-                statements.append(statement)
-            buffer = []
-    trailing = "".join(buffer).strip()
-    if trailing:
-        statements.append(trailing)
-    return statements
+    """Split a SQL script into individually-executable statements."""
+    return _facade.provisioning.split_sql_statements(sql_text, dialect=dialect)
 
 
 def apply_sql(connection_string: str, sql_text: str, *, dialect: str, dry_run: bool) -> int:
     """Execute `sql_text` against `connection_string`. Returns statement count."""
-    statements = _split_statements(sql_text, dialect=dialect)
-    if dry_run:
+    def _announce_dry_run(count: int, dialect_name: str) -> None:
         print(
-            f"[dry-run] would execute {len(statements)} statement(s) against {dialect}")
-        return len(statements)
-    if not statements:
-        return 0
+            f"[dry-run] would execute {count} statement(s) against {dialect_name}")
 
-    from sqlalchemy import create_engine, text
-
-    try:
-        engine = create_engine(connection_string)
-    except Exception as exc:
-        raise SystemExit(
-            f"Failed to execute SQL for '{dialect}': could not create a SQLAlchemy engine. "
-            f"Check the connection string, install the matching driver, and ensure the target is reachable."
-        ) from exc
-
-    try:
-        with engine.begin() as connection:
-            for statement in statements:
-                connection.execute(text(statement))
-    except Exception as exc:
-        raise SystemExit(
-            f"Failed to execute SQL for '{dialect}': {exc}") from exc
-    finally:
-        engine.dispose()
-    return len(statements)
+    return _facade.provisioning.apply_sql(
+        connection_string,
+        sql_text,
+        dialect=dialect,
+        dry_run=dry_run,
+        on_dry_run=_announce_dry_run,
+    )
 
 
 def apply_example_data(dialect: str, connection_string: str, *, dry_run: bool) -> None:
+    """Create + seed the example tables for `dialect` from SETUP_SQL_FILES."""
     sql_path = SETUP_SQL_FILES[dialect]
     if not sql_path.exists():
         return
     _log_step(
         f"Applying {sql_path.name} to {dialect}",
-        explain="Creates the example tables (employees, customers, etc.) and seeds a "
-        "few rows tagged with sensitivity_level, so later steps have real data to govern.",
+        explain="Creates the example tables (employees, customers, etc.) and seeds a few rows tagged with sensitivity_level.",
     )
     if dialect == "sqlite" and not dry_run:
         db_path = connection_string.removeprefix("sqlite:///")
@@ -402,6 +383,7 @@ def apply_example_data(dialect: str, connection_string: str, *, dry_run: bool) -
 
 
 def teardown_dialect(dialect: str, connection_string: str, *, dry_run: bool) -> None:
+    """Drop everything apply_example_data() would have created for `dialect`."""
     _log_step(
         f"Tearing down example data for {dialect}",
         explain="Drops the example tables/schemas so the next apply starts from a clean slate.",
@@ -410,24 +392,19 @@ def teardown_dialect(dialect: str, connection_string: str, *, dry_run: bool) -> 
               TEARDOWN_SQL[dialect], dialect=dialect, dry_run=dry_run)
 
 
-# --------------------------------------------------------------------------
-# per-role account provisioning
-# --------------------------------------------------------------------------
+# ==========================================================================
+# 5. Per-role account provisioning
+# ==========================================================================
 
 def _roles_with_configured_passwords(config: dict | None) -> dict | None:
-    """Return `config` with any role missing a password/password_env dropped.
-
-    SQLite has no server-side users so this only matters for the other three
-    dialects. Roles without a password are skipped (with a clear message)
-    rather than silently given a shared or guessed one.
-    """
+    """Return `config` with any role missing a password/password_env dropped."""
     if not isinstance(config, dict):
         return config
     roles_config = config.get("roles", {})
     if not isinstance(roles_config, dict):
         return config
 
-    filtered_roles = {}
+    filtered_roles: dict[str, dict] = {}
     for role_name, role_config in roles_config.items():
         if not isinstance(role_config, dict):
             continue
@@ -458,36 +435,59 @@ def provision_role_accounts(
     table_name = TABLE_FOR_POLICY[dialect]
     _log_step(
         f"Provisioning role accounts for {dialect}",
-        explain="Compiles each role's permissions (from governance.yaml) into real "
-        "CREATE USER / CREATE ROLE / GRANT statements, then applies them. This is the "
-        "'least privilege' step: each role only gets the actions it's configured for.",
+        explain="Compiles each role's permissions from governance.yaml into CREATE USER / CREATE ROLE / GRANT statements.",
     )
+
     effective_config = _roles_with_configured_passwords(config)
 
-    try:
-        policy_sql = compile_policy_sql(
-            "restrict_pii", table_name, dialect=dialect, config=effective_config)
-    except ValueError as exc:
-        print(f"  skipped: {exc}")
+    def _on_skip(reason: str) -> None:
+        print(f"  skipped: {reason}")
         print("  set account.password (or account.password_env) for each role in your governance config to enable this step.")
+
+    def _on_apply(count: int) -> None:
+        if not dry_run:
+            print(f"  applied {count} statement(s)")
+
+    statement_transform = None
+    if dialect == "mysql":
+        def statement_transform(statement): return statement.replace(
+            "@'localhost'", "@'%'")
+
+    previous_config = _facade.config
+    _facade.config = effective_config or previous_config
+    try:
+        policy_sql = _facade.compile_grants(
+            "restrict_pii",
+            table_name,
+            dialect=dialect,
+        )
+    except ValueError as exc:
+        _on_skip(str(exc))
         return
+    finally:
+        _facade.config = previous_config
 
     statements = policy_sql.get("sql", [])
     if not statements:
-        print("  (no role accounts configured)")
+        _on_skip("no role accounts configured")
         return
 
-    if dialect == "mysql":
-        statements = [statement.replace("@'localhost'", "@'%'")
+    if statement_transform is not None:
+        statements = [statement_transform(statement)
                       for statement in statements]
 
     count = apply_sql(connection_string, "\n".join(
         statements), dialect=dialect, dry_run=dry_run)
     if not dry_run:
-        print(f"  applied {count} statement(s)")
+        _on_apply(count)
 
+
+# ==========================================================================
+# 6. Reporting -- human-readable role/permission summaries
+# ==========================================================================
 
 def print_access_summary(dialect: str, config: dict | None) -> None:
+    """Print a one-line-per-role table of username/permissions/scope."""
     _log_step(
         f"Role permission summary for {dialect}",
         explain="A recap of who can do what, so you can eyeball the effective access model at a glance.",
@@ -500,7 +500,7 @@ def print_access_summary(dialect: str, config: dict | None) -> None:
     print("role | username | password | permissions | scope")
     print("-" * 96)
     for role_name, role_config in items:
-        username, password = _account_info(role_config, role_name)
+        username, _ = _account_info(role_config, role_name)
         permissions = _as_list(role_config.get("permissions", []))
         scope = role_config.get("scope")
         password_display = "********"
@@ -512,15 +512,16 @@ def print_access_summary(dialect: str, config: dict | None) -> None:
 
 
 def print_role_account_overview(config: dict | None) -> None:
+    """Print a multi-line, per-role overview (description/username/permissions/scope)."""
     overview = _collect_role_account_overview(config)
     if not overview:
         print("No role/account overview available from the current governance config.")
         return
 
     _print_section("Role and account overview")
-    items = dict(_role_config_items(config))
+    descriptions_by_role = dict(_role_config_items(config))
     for entry in overview:
-        role_config = items.get(entry["role"], {})
+        role_config = descriptions_by_role.get(entry["role"], {})
         print(
             f"- {entry['role']}: {role_config.get('description', '') or 'no description'}")
         print(f"  username: {entry['username']}")
@@ -530,11 +531,12 @@ def print_role_account_overview(config: dict | None) -> None:
             f"  scope: {entry['scope'] if entry['scope'] is not None else 'not set'}")
 
 
-# --------------------------------------------------------------------------
-# demos (access control CRUD, policy checks, role validation)
-# --------------------------------------------------------------------------
+# ==========================================================================
+# 7. Demos -- access control CRUD, policy checks, role validation
+# ==========================================================================
 
 def _demo_access_control_crud(demo_db: Path) -> None:
+    """Walk through create/read/update/list/delete for roles, permissions, and access entries."""
     _print_section("Access-control CRUD demo")
     print("Roles, permissions, and access entries are just governed records themselves --")
     print("this walks through creating, reading, updating, and deleting them via the same")
@@ -542,92 +544,92 @@ def _demo_access_control_crud(demo_db: Path) -> None:
     if demo_db.exists():
         demo_db.unlink()
 
+    ac = _facade.access_control
     kwargs = {"db_path": str(demo_db), "backend": "sqlite"}
-    role = create_role(name="data_engineer",
-                       description="Example role for schema and governance operations", **kwargs)
-    permission = create_permission(
+
+    role = ac.create_role(
+        name="data_engineer", description="Example role for schema and governance operations", **kwargs)
+    permission = ac.create_permission(
         name="alter", description="Grant schema alteration access", **kwargs)
-    access = create_access(
+    access = ac.create_access(
         name="schema_admin", description="Access entry for schema administration", **kwargs)
     print(f"created role: {role['name']} ({role['id']})")
     print(f"created permission: {permission['name']} ({permission['id']})")
     print(f"created access: {access['name']} ({access['id']})")
 
-    updated_role = update_role(
+    updated_role = ac.update_role(
         role["id"], description="Updated example role", **kwargs)
-    updated_permission = update_permission(
+    updated_permission = ac.update_permission(
         permission["id"], description="Updated schema-alter permission", **kwargs)
-    updated_access = update_access(
+    updated_access = ac.update_access(
         access["id"], description="Updated schema admin access", **kwargs)
     print(f"updated role: {updated_role['description']}")
     print(f"updated permission: {updated_permission['description']}")
     print(f"updated access: {updated_access['description']}")
 
     print("role list:", [
-          f"{item['id']}:{item['name']}" for item in list_roles(**kwargs)])
+          f"{item['id']}:{item['name']}" for item in ac.list_roles(**kwargs)])
     print("permission list:", [
-          f"{item['id']}:{item['name']}" for item in list_permissions(**kwargs)])
+          f"{item['id']}:{item['name']}" for item in ac.list_permissions(**kwargs)])
     print("access list:", [
-          f"{item['id']}:{item['name']}" for item in list_accesses(**kwargs)])
+          f"{item['id']}:{item['name']}" for item in ac.list_accesses(**kwargs)])
 
     print("read-back checks:")
-    print(f"  role: {get_role(role['id'], **kwargs)['name']}")
+    print(f"  role: {ac.get_role(role['id'], **kwargs)['name']}")
     print(
-        f"  permission: {get_permission(permission['id'], **kwargs)['name']}")
-    print(f"  access: {get_access(access['id'], **kwargs)['name']}")
+        f"  permission: {ac.get_permission(permission['id'], **kwargs)['name']}")
+    print(f"  access: {ac.get_access(access['id'], **kwargs)['name']}")
 
-    delete_role(role["id"], **kwargs)
-    delete_permission(permission["id"], **kwargs)
-    delete_access(access["id"], **kwargs)
+    ac.delete_role(role["id"], **kwargs)
+    ac.delete_permission(permission["id"], **kwargs)
+    ac.delete_access(access["id"], **kwargs)
     print(
-        f"remaining rows: roles={len(list_roles(**kwargs))}, "
-        f"permissions={len(list_permissions(**kwargs))}, "
-        f"accesses={len(list_accesses(**kwargs))}"
+        f"remaining rows: roles={len(ac.list_roles(**kwargs))}, "
+        f"permissions={len(ac.list_permissions(**kwargs))}, "
+        f"accesses={len(ac.list_accesses(**kwargs))}"
     )
 
 
 def _demo_policy_permissions() -> None:
+    """Show that the policy engine only allows actions explicitly on the role's permission list."""
     _print_section("Dynamic policy permission demo")
     print("The policy engine is fail-closed: an action is only ALLOWED if the role's")
     print("permission list explicitly includes it. Nothing is granted by default.")
-    actions = ["select", "insert", "update",
-               "delete", "create", "alter", "drop"]
-    for action in actions:
-        decision = check_policy(actor_role="data_owner",
-                                action_type=action, role_permissions=actions)
-        print(f"  {action:<8} -> {'ALLOWED' if decision.allowed else 'DENIED'}")
+    for action in DEMO_ACTIONS:
+        decision = _facade.check_access(
+            actor_role="data_owner", action_type=action, role_permissions=DEMO_ACTIONS)
+        print(f"  {action:<8} -> {_decision_label(decision)}")
 
 
 def _demo_enterprise_role_validation(config: dict | None) -> None:
+    """Show the same role/action decision holds across every dialect's target table."""
     _print_section("Enterprise role validation demo")
     print("Same role, same action, checked against every dialect's target table --")
     print("showing that the decision is driven by governance config, not by database engine.")
+
     items = _role_config_items(config)
     demo_roles = [(name, _as_list(cfg.get("permissions", []))) for name, cfg in items] or [
         ("data_owner", ["select", "insert", "update", "delete"]),
         ("analyst", ["select"]),
     ]
-    targets = [
-        ("sqlite", "employees"),
-        ("mysql", "employees"),
-        ("postgresql", "hr.employees"),
-        ("mssql", "hr.employees"),
-    ]
+    targets = [(dialect, TABLE_FOR_POLICY[dialect])
+               for dialect in ALL_DIALECTS]
 
     for role_name, permissions in demo_roles:
         print(f"- role: {role_name}")
         print(
             f"  permissions: {', '.join(permissions) if permissions else 'none'}")
         for dialect, table_name in targets:
-            decision = check_policy(
+            decision = _facade.check_access(
                 actor_role=role_name, action_type="select", role_permissions=permissions)
             print(
-                f"  {dialect:<11} {table_name:<16} -> {'ALLOWED' if decision.allowed else 'DENIED'}")
+                f"  {dialect:<11} {table_name:<16} -> {_decision_label(decision)}")
 
     print("Sensitive-column reminder: PII and high-sensitivity columns remain denied unless explicitly allowed by governance policy.")
 
 
 def _demo_account_role_access(config: dict | None) -> None:
+    """Pair each configured role's DB account with what actions it's actually allowed."""
     _print_section("Role access implementation demo")
     print("Ties it together: each configured role's actual DB account, next to what")
     print("actions the policy engine says that role is allowed to perform.")
@@ -640,22 +642,22 @@ def _demo_account_role_access(config: dict | None) -> None:
         print(
             f"  permissions: {', '.join(permissions) if permissions else 'none'}")
         for action in ["select", "insert", "delete", "create", "alter"]:
-            decision = check_policy(
+            decision = _facade.check_access(
                 actor_role=role_name, action_type=action, role_permissions=permissions)
-            print(
-                f"    {action:<8} -> {'ALLOWED' if decision.allowed else 'DENIED'}")
+            print(f"    {action:<8} -> {_decision_label(decision)}")
 
 
 def run_demos(config: dict | None, *, demo_db: Path) -> None:
+    """Run every demo in sequence: CRUD, static policy checks, then config-driven ones."""
     _demo_access_control_crud(demo_db)
     _demo_policy_permissions()
     _demo_enterprise_role_validation(config)
     _demo_account_role_access(config)
 
 
-# --------------------------------------------------------------------------
-# CLI
-# --------------------------------------------------------------------------
+# ==========================================================================
+# 8. CLI
+# ==========================================================================
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -663,7 +665,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         epilog=(
             "Examples:\n"
             "  python examples/enterprise_setup.py --dry-run\n"
-            "  IKIGOV_POSTGRES_URL=postgresql://user:pw@host/db python examples/enterprise_setup.py --dialect postgresql\n"
+            "  IKIDGOV_POSTGRES_URL=postgresql://user:pw@host/db python examples/enterprise_setup.py --dialect postgresql\n"
             "  python examples/enterprise_setup.py --dialect all --dry-run\n"
             "  python examples/enterprise_setup.py --teardown --dialect mysql\n"
             "  python examples/enterprise_setup.py --dialect postgresql --env-file .env.staging"
@@ -672,20 +674,14 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--dialect", choices=[*ALL_DIALECTS, "all"], default="sqlite")
-    parser.add_argument(
-        "--connection-string",
-        help="Explicit connection string, used only with a single --dialect (not 'all').",
-    )
+    parser.add_argument("--connection-string",
+                        help="Explicit connection string, used only with a single --dialect (not 'all').")
     parser.add_argument("--sqlite-path", type=Path,
                         default=ROOT / "data" / "sqlite" / "registry.db")
-    parser.add_argument(
-        "--config", type=Path,
-        help="Optional governance YAML config. If omitted, uses the project config loader and IKIGOV_ENV.",
-    )
-    parser.add_argument(
-        "--env-file", type=Path, default=None,
-        help="Path to a .env file used as a final fallback for connection strings (default: ./.env).",
-    )
+    parser.add_argument("--config", type=Path,
+                        help="Optional governance YAML config. If omitted, uses the project config loader and IKIDGOV_ENV.")
+    parser.add_argument("--env-file", type=Path, default=None,
+                        help="Path to a .env file used as a final fallback for connection strings (default: ./.env).")
     parser.add_argument("--dry-run", action="store_true",
                         help="Show what would run without executing anything")
     parser.add_argument("--teardown", action="store_true",
@@ -696,6 +692,7 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
 
 
 def _run_dialect(dialect: str, args: argparse.Namespace, config: dict | None) -> None:
+    """Resolve a connection, then apply teardown/setup/provisioning/summary for one dialect."""
     if dialect == "sqlite":
         args.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -708,8 +705,7 @@ def _run_dialect(dialect: str, args: argparse.Namespace, config: dict | None) ->
     )
     _log_step(
         f"Resolved connection for {dialect}",
-        explain=f"Using {_mask_connection_string(connection_string)} "
-        f"(checked --connection-string, then env var, then governance config, then .env file, in that order).",
+        explain=f"Using {_mask_connection_string(connection_string)} (checked --connection-string, then env var, then governance config, then .env file, in that order).",
     )
 
     if args.teardown:
@@ -740,7 +736,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         print_role_account_overview(config)
     else:
         _log_step(
-            "No governance config found; set --config or IKIGOV_ENV to select a YAML profile.")
+            "No governance config found; set --config or IKIDGOV_ENV to select a YAML profile.")
 
     if not args.skip_demo:
         run_demos(config, demo_db=args.sqlite_path.parent /

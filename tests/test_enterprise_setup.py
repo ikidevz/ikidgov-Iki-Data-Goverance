@@ -149,7 +149,7 @@ def test_resolve_connection_string_prefers_cli_override():
 
 def test_resolve_connection_string_falls_back_to_env(monkeypatch):
     module = _load_enterprise_setup_module()
-    monkeypatch.setenv("IKIGOV_POSTGRES_URL", "postgresql://from-env")
+    monkeypatch.setenv("IKIDGOV_POSTGRES_URL", "postgresql://from-env")
 
     result = module.resolve_connection_string(
         "postgresql",
@@ -165,8 +165,8 @@ def test_resolve_connection_string_reads_dotenv_file(tmp_path, monkeypatch):
     module = _load_enterprise_setup_module()
     env_path = tmp_path / ".env"
     env_path.write_text(
-        "IKIGOV_POSTGRES_URL=postgresql://from-dotenv\n", encoding="utf-8")
-    monkeypatch.delenv("IKIGOV_POSTGRES_URL", raising=False)
+        "IKIDGOV_POSTGRES_URL=postgresql://from-dotenv\n", encoding="utf-8")
+    monkeypatch.delenv("IKIDGOV_POSTGRES_URL", raising=False)
 
     result = module.resolve_connection_string(
         "postgresql",
@@ -181,7 +181,7 @@ def test_resolve_connection_string_reads_dotenv_file(tmp_path, monkeypatch):
 
 def test_resolve_connection_string_falls_back_to_config(monkeypatch):
     module = _load_enterprise_setup_module()
-    monkeypatch.delenv("IKIGOV_MYSQL_URL", raising=False)
+    monkeypatch.delenv("IKIDGOV_MYSQL_URL", raising=False)
 
     result = module.resolve_connection_string(
         "mysql",
@@ -209,11 +209,11 @@ def test_resolve_connection_string_sqlite_defaults_to_local_file():
 
 def test_resolve_connection_string_raises_actionable_error_when_unconfigured(monkeypatch, tmp_path):
     module = _load_enterprise_setup_module()
-    monkeypatch.delenv("IKIGOV_MSSQL_URL", raising=False)
+    monkeypatch.delenv("IKIDGOV_MSSQL_URL", raising=False)
     monkeypatch.setattr(module, "_load_env_file", lambda env_file=None: {})
     monkeypatch.chdir(tmp_path)
 
-    with pytest.raises(SystemExit, match="IKIGOV_MSSQL_URL"):
+    with pytest.raises(SystemExit, match="IKIDGOV_MSSQL_URL"):
         module.resolve_connection_string(
             "mssql",
             cli_override=None,
@@ -335,6 +335,35 @@ def test_provision_role_accounts_uses_configured_roles_and_accounts(monkeypatch)
     assert captured
     sql_payload = captured[0]["sql_text"]
     assert "CREATE USER IF NOT EXISTS `finance_user`@'%' IDENTIFIED BY 'StrongPw!23';" in sql_payload
+
+
+def test_provision_role_accounts_uses_facade_compile_grants(monkeypatch):
+    module = _load_enterprise_setup_module()
+    captured: list[dict] = []
+
+    def fake_compile_grants(policy_name, table, dialect, config=None):
+        captured.append({"policy_name": policy_name,
+                        "table": table, "dialect": dialect, "config": config})
+        return {"sql": ["GRANT SELECT ON employees TO analyst;"]}
+
+    monkeypatch.setattr(module._facade, "compile_grants", fake_compile_grants)
+    monkeypatch.setattr(module, "apply_sql", lambda *args, **kwargs: 1)
+
+    module.provision_role_accounts(
+        "postgresql",
+        "postgresql://example",
+        dry_run=False,
+        config={
+            "roles": {
+                "analyst": {"account": {"username": "analyst", "password": "StrongPw!23"}},
+            },
+        },
+    )
+
+    assert captured
+    assert captured[0]["policy_name"] == "restrict_pii"
+    assert captured[0]["table"] == "hr.employees"
+    assert captured[0]["dialect"] == "postgresql"
 
 
 def test_provision_role_accounts_is_noop_for_sqlite(monkeypatch):

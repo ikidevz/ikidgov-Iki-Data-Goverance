@@ -1,4 +1,4 @@
-# Test-only environment for exercising ikigov's scan command.
+# Test-only environment for exercising ikidgov's scan command.
 # Not for production use -- credentials live in .env (see .env.example) and are throwaway.
 #
 # Usage:
@@ -6,7 +6,7 @@
 #   docker compose up -d --wait
 #   docker compose exec toolbox bash
 #   # inside the toolbox container:
-#   ikigov scan --type sql --path /data/sqlite/registry.db --table customers --owner jdoe
+#   ikidgov scan --type sql --path /data/sqlite/registry.db --table customers --owner jdoe
 #
 # Note: the current scan CLI accepts --type, --path, --table, and --owner; it does not
 # support --dialect or --dsn flags in this version.

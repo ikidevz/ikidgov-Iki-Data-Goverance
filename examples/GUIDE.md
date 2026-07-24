@@ -41,13 +41,13 @@ This creates `./data/sqlite/registry.db` by default. Override the location with 
 Point the script at a database you already have running, via an environment variable:
 
 ```bash
-export IKIGOV_POSTGRES_URL="postgresql://user:pw@host:5432/db"
+export IKIDGOV_POSTGRES_URL="postgresql://user:pw@host:5432/db"
 python examples/enterprise_setup.py --dialect postgresql
 
-export IKIGOV_MYSQL_URL="mysql+pymysql://user:pw@host:3306/db"
+export IKIDGOV_MYSQL_URL="mysql+pymysql://user:pw@host:3306/db"
 python examples/enterprise_setup.py --dialect mysql
 
-export IKIGOV_MSSQL_URL="mssql+pyodbc://user:pw@host:1433/db?driver=ODBC+Driver+18+for+SQL+Server"
+export IKIDGOV_MSSQL_URL="mssql+pyodbc://user:pw@host:1433/db?driver=ODBC+Driver+18+for+SQL+Server"
 python examples/enterprise_setup.py --dialect mssql
 ```
 
@@ -57,7 +57,7 @@ Or pass a connection string directly for a single dialect:
 python examples/enterprise_setup.py --dialect postgresql --connection-string "postgresql://user:pw@host:5432/db"
 ```
 
-Connection resolution order: `--connection-string` > the matching `IKIGOV_*_URL` env var > a `connection_string`/`dsn` entry in your governance config > (SQLite only) a local file.
+Connection resolution order: `--connection-string` > the matching `IKIDGOV_*_URL` env var > a `connection_string`/`dsn` entry in your governance config > (SQLite only) a local file.
 
 To run every dialect in one pass, use `--dialect all` (each dialect still resolves its own connection independently):
 
@@ -90,7 +90,7 @@ ikidgov scan --type sql --path ./data/sqlite/registry.db --table employees --own
 Or with an environment-specific profile:
 
 ```bash
-IKIGOV_ENV=dev python examples/enterprise_setup.py --dry-run
+IKIDGOV_ENV=dev python examples/enterprise_setup.py --dry-run
 ```
 
 ## Config file format

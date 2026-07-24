@@ -84,18 +84,18 @@ sqlite:
 
 postgresql:
   mode: direct
-  connection_string_env: IKIGOV_POSTGRES_URL
-  dsn_env: IKIGOV_POSTGRES_URL
-  note: set IKIGOV_POSTGRES_URL to your PostgreSQL connection string
+  connection_string_env: IKIDGOV_POSTGRES_URL
+  dsn_env: IKIDGOV_POSTGRES_URL
+  note: set IKIDGOV_POSTGRES_URL to your PostgreSQL connection string
 
 mysql:
   mode: direct
-  connection_string_env: IKIGOV_MYSQL_URL
-  dsn_env: IKIGOV_MYSQL_URL
-  note: set IKIGOV_MYSQL_URL to your MySQL connection string
+  connection_string_env: IKIDGOV_MYSQL_URL
+  dsn_env: IKIDGOV_MYSQL_URL
+  note: set IKIDGOV_MYSQL_URL to your MySQL connection string
 
 mssql:
   mode: direct
-  connection_string_env: IKIGOV_MSSQL_URL
-  dsn_env: IKIGOV_MSSQL_URL
-  note: set IKIGOV_MSSQL_URL and install the Microsoft ODBC Driver 18 for SQL Server to connect from this host
+  connection_string_env: IKIDGOV_MSSQL_URL
+  dsn_env: IKIDGOV_MSSQL_URL
+  note: set IKIDGOV_MSSQL_URL and install the Microsoft ODBC Driver 18 for SQL Server to connect from this host

@@ -3,7 +3,7 @@ multi-dialect SQL connector. SQLite is serverless, so there's no long-running
 container for it -- this script just runs once and exits (see the
 `sqlite-init` service in docker-compose.yml), leaving the .db file behind on
 a shared volume for the toolbox container (and your host, via ./data/sqlite)
-to use directly with `ikigov scan --dialect sqlite`.
+to use directly with `ikidgov scan --dialect sqlite`.
 """
 import sqlite3
 from pathlib import Path

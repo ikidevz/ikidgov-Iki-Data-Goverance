@@ -108,8 +108,8 @@ def _normalize_config(data: Any) -> dict[str, Any]:
 
 
 def _candidate_paths() -> list[Path]:
-    env_path = os.getenv("IKIGOV_CONFIG")
-    environment = os.getenv("IKIGOV_ENV") or os.getenv(
+    env_path = os.getenv("IKIDGOV_CONFIG")
+    environment = os.getenv("IKIDGOV_ENV") or os.getenv(
         "IKIDGOV_ENV") or os.getenv("APP_ENV")
     paths: list[Path] = []
 

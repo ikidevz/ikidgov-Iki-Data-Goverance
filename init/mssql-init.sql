@@ -3,13 +3,13 @@
 -- so this is executed explicitly by the `mssql-init` service via sqlcmd
 -- after the server reports healthy (see docker-compose.yml).
 
-IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = 'ikigov_test')
+IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = 'ikidgov_test')
 BEGIN
-    CREATE DATABASE ikigov_test;
+    CREATE DATABASE ikidgov_test;
 END
 GO
 
-USE ikigov_test;
+USE ikidgov_test;
 GO
 
 IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'customers')

@@ -423,7 +423,7 @@ def apply_sql_file(
             dialect_config, "PGPASSWORD", project_dir=project_dir)
         service = dialect_config.get("service", "postgres")
         _run(["docker", "compose", "-f", str(compose_file), "exec", "-T", "-e", f"PGPASSWORD={env['PGPASSWORD']}", service, "psql", "-U", dialect_config.get(
-            "user", "ikigov"), "-d", dialect_config.get("database", "ikigov_test"), "-v", "ON_ERROR_STOP=1"], cwd=project_dir, input_bytes=sql_text.encode("utf-8"), env=env)
+            "user", "ikidgov"), "-d", dialect_config.get("database", "ikidgov_test"), "-v", "ON_ERROR_STOP=1"], cwd=project_dir, input_bytes=sql_text.encode("utf-8"), env=env)
         return
     if dialect == "mysql":
         env = os.environ.copy()
@@ -498,7 +498,7 @@ DEALLOCATE PREPARE stmt;
 """
         combined_sql = migration_sql + sql_text
         _run(["docker", "compose", "-f", str(compose_file), "exec", "-T", "-e", f"MYSQL_PWD={env['MYSQL_PWD']}", service, "mysql", "-u", dialect_config.get(
-            "user", "root"), dialect_config.get("database", "ikigov_test")], cwd=project_dir, input_bytes=combined_sql.encode("utf-8"), env=env)
+            "user", "root"), dialect_config.get("database", "ikidgov_test")], cwd=project_dir, input_bytes=combined_sql.encode("utf-8"), env=env)
         return
     if dialect == "mssql":
         env = os.environ.copy()
@@ -576,7 +576,7 @@ DROP SCHEMA IF EXISTS regional CASCADE;
         dialect_config, "PGPASSWORD", project_dir=project_dir)
     service = dialect_config.get("service", "postgres")
     _run(["docker", "compose", "-f", str(compose_file), "exec", "-T", "-e", f"PGPASSWORD={env['PGPASSWORD']}", service, "psql", "-U", dialect_config.get(
-        "user", "ikigov"), "-d", dialect_config.get("database", "ikigov_test"), "-v", "ON_ERROR_STOP=1"], cwd=project_dir, input_bytes=sql_text.encode("utf-8"), env=env)
+        "user", "ikidgov"), "-d", dialect_config.get("database", "ikidgov_test"), "-v", "ON_ERROR_STOP=1"], cwd=project_dir, input_bytes=sql_text.encode("utf-8"), env=env)
 
 
 def wipe_mysql(project_dir: Path, compose_file: Path, dry_run: bool, config: dict | None = None) -> None:
@@ -602,7 +602,7 @@ DROP TABLE IF EXISTS customers;
         dialect_config, "MYSQL_PWD", project_dir=project_dir)
     service = dialect_config.get("service", "mysql")
     _run(["docker", "compose", "-f", str(compose_file), "exec", "-T", "-e", f"MYSQL_PWD={env['MYSQL_PWD']}", service, "mysql", "-u", dialect_config.get(
-        "user", "root"), dialect_config.get("database", "ikigov_test")], cwd=project_dir, input_bytes=sql_text.encode("utf-8"), env=env)
+        "user", "root"), dialect_config.get("database", "ikidgov_test")], cwd=project_dir, input_bytes=sql_text.encode("utf-8"), env=env)
 
 
 def wipe_mssql(project_dir: Path, compose_file: Path, dry_run: bool, config: dict | None = None) -> None:

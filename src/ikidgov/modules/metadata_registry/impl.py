@@ -6,8 +6,8 @@ from typing import Any
 
 from ikidgov.core.module_base import Module
 
-DEFAULT_DB_PATH = Path(os.getenv("IKIGOV_REGISTRY_DB_PATH",
-                       os.getenv("IKIGOV_DB_PATH", "registry.db")))
+DEFAULT_DB_PATH = Path(os.getenv("IKIDGOV_REGISTRY_DB_PATH",
+                       os.getenv("IKIDGOV_DB_PATH", "registry.db")))
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS datasets (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,12 +36,12 @@ class MetadataRegistry(Module):
 
     def __init__(self, db_path: str | None = None):
         selected_db_path = db_path or os.getenv(
-            "IKIGOV_REGISTRY_DB_PATH") or os.getenv("IKIGOV_DB_PATH")
-        if db_path is None and selected_db_path and not os.getenv("IKIGOV_REGISTRY_DB_PATH") and os.getenv("IKIGOV_DB_PATH"):
+            "IKIDGOV_REGISTRY_DB_PATH") or os.getenv("IKIDGOV_DB_PATH")
+        if db_path is None and selected_db_path and not os.getenv("IKIDGOV_REGISTRY_DB_PATH") and os.getenv("IKIDGOV_DB_PATH"):
             import warnings
 
             warnings.warn(
-                "IKIGOV_DB_PATH is deprecated for metadata registry storage. Use IKIGOV_REGISTRY_DB_PATH instead.",
+                "IKIDGOV_DB_PATH is deprecated for metadata registry storage. Use IKIDGOV_REGISTRY_DB_PATH instead.",
                 DeprecationWarning,
                 stacklevel=2,
             )

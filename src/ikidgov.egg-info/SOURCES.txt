@@ -3,6 +3,7 @@ README.md
 pyproject.toml
 src/ikidgov/__init__.py
 src/ikidgov/config_loader.py
+src/ikidgov/facade.py
 src/ikidgov.egg-info/PKG-INFO
 src/ikidgov.egg-info/SOURCES.txt
 src/ikidgov.egg-info/dependency_links.txt

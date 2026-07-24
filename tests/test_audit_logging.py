@@ -7,7 +7,7 @@ from ikidgov.modules.policy_engine.impl import PolicyEngine
 
 def test_emit_audit_event_writes_jsonl(tmp_path, monkeypatch):
     log_path = tmp_path / "audit.log"
-    monkeypatch.setenv("IKIGOV_AUDIT_LOG", str(log_path))
+    monkeypatch.setenv("IKIDGOV_AUDIT_LOG", str(log_path))
 
     payload = emit_audit_event(
         "policy_evaluated",
@@ -27,7 +27,7 @@ def test_emit_audit_event_writes_jsonl(tmp_path, monkeypatch):
 
 def test_policy_engine_emits_audit_event_on_check(tmp_path, monkeypatch):
     log_path = tmp_path / "audit.log"
-    monkeypatch.setenv("IKIGOV_AUDIT_LOG", str(log_path))
+    monkeypatch.setenv("IKIDGOV_AUDIT_LOG", str(log_path))
 
     engine = PolicyEngine()
     decision = engine.check(actor_role="analyst", action_type="select")
@@ -42,7 +42,7 @@ def test_policy_engine_emits_audit_event_on_check(tmp_path, monkeypatch):
 
 def test_access_control_module_emits_audit_event_on_create_role(tmp_path, monkeypatch):
     log_path = tmp_path / "audit.log"
-    monkeypatch.setenv("IKIGOV_AUDIT_LOG", str(log_path))
+    monkeypatch.setenv("IKIDGOV_AUDIT_LOG", str(log_path))
 
     module = AccessControlModule(db_path=str(tmp_path / "access.db"))
     module.run(action="create_role", name="auditor", description="Audit role")

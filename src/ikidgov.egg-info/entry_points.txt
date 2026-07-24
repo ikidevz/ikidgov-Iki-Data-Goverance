@@ -1,3 +1,6 @@
+[console_scripts]
+ikidgov = ikidgov.cli.main:main
+
 [ikidgov.detectors]
 builtin = ikidgov.detectors.builtin_detector:BuiltinDetector
 iki_pii_masker = ikidgov.detectors.iki_pii_masker_detector:IkiPIIMaskerDetector
@@ -7,6 +10,3 @@ classification_engine = ikidgov.modules.classification_engine.impl:Classificatio
 example_module = ikidgov.modules.example_module.impl:ExampleModule
 metadata_registry = ikidgov.modules.metadata_registry.impl:MetadataRegistry
 policy_engine = ikidgov.modules.policy_engine.impl:PolicyEngine
-
-[console_scripts]
-ikidgov = ikidgov.cli.main:main

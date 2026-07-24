@@ -113,17 +113,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _run_command(command, args: argparse.Namespace) -> None:
-    saved_env = os.getenv("IKIGOV_ENV")
+    saved_env = os.getenv("IKIDGOV_ENV")
     if getattr(args, "environment", None) is not None:
-        os.environ["IKIGOV_ENV"] = args.environment
+        os.environ["IKIDGOV_ENV"] = args.environment
     try:
         payload = command.execute(args)
         print(command.render(payload, getattr(args, "format", "json")))
     finally:
         if saved_env is None:
-            os.environ.pop("IKIGOV_ENV", None)
+            os.environ.pop("IKIDGOV_ENV", None)
         else:
-            os.environ["IKIGOV_ENV"] = saved_env
+            os.environ["IKIDGOV_ENV"] = saved_env
 
 
 def main(argv: Iterable[str] | None = None) -> int:
